@@ -1,21 +1,53 @@
 import pdfplumber
+import sys
+import os
+from pathlib import Path
 
-def extract_text_from_pdf(pdf_path, output_txt_path):
-    with pdfplumber.open(pdf_path) as pdf:
-        all_text = ""
-        for page_number, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if text:
-                all_text += f"--- Page {page_number + 1} ---\n"
-                all_text += text + "\n\n"
+def extract_text_from_pdf(pdf_path):
+    """PDFファイルからテキストを抽出して同じディレクトリに.txtファイルを保存する"""
+    try:
+        # 入力ファイルのパスを解析
+        input_path = Path(pdf_path)
+        if not input_path.exists():
+            print(f"エラー: ファイル '{pdf_path}' が見つかりません。")
+            return False
+        
+        if not input_path.suffix.lower() == '.pdf':
+            print(f"エラー: '{pdf_path}' はPDFファイルではありません。")
+            return False
+        
+        # 出力ファイルのパスを生成（同じディレクトリに.txt拡張子で）
+        output_path = input_path.with_suffix('.txt')
+        
+        # PDFからテキストを抽出
+        with pdfplumber.open(pdf_path) as pdf:
+            all_text = ""
+            for page_number, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text:
+                    all_text += f"--- Page {page_number + 1} ---\n"
+                    all_text += text + "\n\n"
+        
+        # テキストをファイルに保存
+        with open(output_path, mode='w', encoding='utf-8') as output_file:
+            output_file.write(all_text)
+        
+        print(f"テキスト抽出完了！結果は「{output_path}」に保存されました。")
+        return True
+        
+    except Exception as e:
+        print(f"エラーが発生しました: {str(e)}")
+        return False
 
-    # テキストをファイルに保存
-    with open(output_txt_path, mode='w', encoding='utf-8') as output_file:
-        output_file.write(all_text)
+def main():
+    # コマンドライン引数をチェック
+    if len(sys.argv) != 2:
+        print("使用方法: python pdf_to_text.py <PDFファイルパス>")
+        print("例: python pdf_to_text.py document.pdf")
+        sys.exit(1)
+    
+    pdf_path = sys.argv[1]
+    extract_text_from_pdf(pdf_path)
 
-    print(f"テキスト抽出完了！結果は「{output_txt_path}」に保存されました。")
-
-# 使用例
-pdf_path = "input.pdf"
-output_txt_path = "output.txt"
-extract_text_from_pdf(pdf_path, output_txt_path)
+if __name__ == "__main__":
+    main()
