@@ -1,55 +1,107 @@
 # Deno TypeScript プロジェクト
 
-## PDF テキスト診断スクリプト
+Deno を使用した TypeScript ツール集です。
 
-PDF ファイルにテキスト層が含まれているかを確認するスクリプトを3種類用意しています。
+## ディレクトリ構造
 
-### 1. pdf-lib 版 (check-pdf-text.ts)
-
-シンプルな実装ですが、精度は限定的です。
-
-```bash
-# 直接実行
-deno run --allow-read src/check-pdf-text.ts sample.pdf
-
-# タスク経由で実行
-deno task check-pdf sample.pdf
+```
+deno-ts/
+├── src/              # サンプルアプリケーション
+│   └── main.ts       # デモ用のメインファイル
+├── check-pdf/        # PDFテキストチェックツール
+│   ├── check-pdf-text.ts
+│   ├── check-pdf-text-simple.ts
+│   └── README.md
+├── pdf-extract/      # PDF テキスト抽出ツール（Google Cloud連携）
+│   ├── pdf-extract.ts
+│   ├── app.ts
+│   ├── cli/
+│   ├── clients/
+│   ├── handlers/
+│   ├── processors/
+│   ├── types/
+│   ├── utils/
+│   └── README.md
+├── deno.json         # Deno設定ファイル
+├── deno.lock         # ロックファイル
+└── README.md         # このファイル
 ```
 
-### 2. PDF.js 版 (check-pdf-text-pdfjs.ts)
+## ツール一覧
 
-より正確にテキストコンテンツを検出します。各ページのテキスト文字数も表示します。
-※ 環境によってはキャンバス依存関係のエラーが発生する場合があります。
+### 1. check-pdf - PDFテキストチェックツール
 
-```bash
-# 直接実行
-deno run --allow-read --allow-net src/check-pdf-text-pdfjs.ts sample.pdf
-
-# タスク経由で実行
-deno task check-pdf-pdfjs sample.pdf
-```
-
-### 3. 軽量版 (check-pdf-text-simple.ts)
-
-外部依存なしで PDF の生データを解析します。エラーが発生しない安定版です。
+PDFファイルにテキストレイヤーが含まれているかを確認します。
 
 ```bash
-# 直接実行
-deno run --allow-read src/check-pdf-text-simple.ts sample.pdf
+# pdf-libバージョン
+deno task check-pdf <PDFファイルパス>
 
-# タスク経由で実行
-deno task check-pdf-simple sample.pdf
+# 軽量バージョン（外部ライブラリ不要）
+deno task check-pdf-simple <PDFファイルパス>
 ```
 
-## 機能
+詳細は [check-pdf/README.md](check-pdf/README.md) を参照してください。
 
-- コマンドライン引数で PDF ファイルパスを指定
-- PDF のページ数を表示
-- テキスト層の有無を判定
-- PDF.js 版では各ページのテキスト文字数も表示
+### 2. pdf-extract - PDFテキスト抽出ツール
 
-## エラーハンドリング
+Google Cloud Vision API または Document AI を使用してPDFからテキストを抽出します。
 
-- ファイルが存在しない場合のエラー表示
-- PDF 以外のファイルを指定した場合のエラー表示
-- 引数未指定時の使用方法表示
+```bash
+# 基本的な使用方法
+deno task pdf-extract <入力ディレクトリ>
+
+# Document AI を使用
+deno task pdf-extract <入力ディレクトリ> -a documentai
+
+# 詳細オプション付き
+deno task pdf-extract <入力ディレクトリ> -o <出力ディレクトリ> -v
+```
+
+詳細は [pdf-extract/README.md](pdf-extract/README.md) を参照してください。
+
+## 開発
+
+### コマンド一覧
+
+```bash
+# 開発サーバー起動（サンプルアプリ）
+deno task dev
+
+# 型チェック
+deno task check
+
+# コードフォーマット
+deno fmt
+
+# Lint
+deno lint
+
+# テスト
+deno task test
+```
+
+### 新しいツールの追加
+
+新しいツールを追加する場合は、専用のディレクトリを作成し、関連ファイルをまとめてください：
+
+```bash
+mkdir my-tool
+cd my-tool
+# ツールのファイルを作成
+```
+
+`deno.json` にタスクを追加：
+
+```json
+{
+  "tasks": {
+    "my-tool": "deno run --allow-read my-tool/main.ts"
+  }
+}
+```
+
+## 要件
+
+- Deno 1.40.0 以上
+- 各ツール固有の要件は、それぞれのREADMEを参照してください

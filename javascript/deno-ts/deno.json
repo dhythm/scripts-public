@@ -6,10 +6,10 @@
     "fmt": "deno fmt",
     "lint": "deno lint",
     "check": "deno check src/main.ts",
-    "check-pdf": "deno run --allow-read src/check-pdf-text.ts",
-    "check-pdf-simple": "deno run --allow-read src/check-pdf-text-simple.ts",
-    "pdf-extract": "deno run --allow-read --allow-write --allow-env --allow-net src/pdf-extract.ts",
-    "pdf-extract:check": "deno check src/pdf-extract.ts"
+    "check-pdf": "deno run --allow-read check-pdf/check-pdf-text.ts",
+    "check-pdf-simple": "deno run --allow-read check-pdf/check-pdf-text-simple.ts",
+    "pdf-extract": "deno run --allow-read --allow-write --allow-env --allow-net pdf-extract/pdf-extract.ts",
+    "pdf-extract:check": "deno check pdf-extract/pdf-extract.ts"
   },
   "compilerOptions": {
     "lib": ["deno.window", "deno.unstable"],
