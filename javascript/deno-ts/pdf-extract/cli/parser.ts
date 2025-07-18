@@ -9,12 +9,14 @@ export interface CliArgs {
   concurrency?: number;
   verbose?: boolean;
   help?: boolean;
+  merge?: boolean;
+  "merge-separator"?: string;
 }
 
 export function parseArgs(args: string[]): CliArgs {
   const parsed = parse(args, {
-    string: ["output", "api", "pattern", "concurrency"],
-    boolean: ["verbose", "help"],
+    string: ["output", "api", "pattern", "concurrency", "merge-separator"],
+    boolean: ["verbose", "help", "merge"],
     alias: {
       o: "output",
       a: "api", 
@@ -22,11 +24,14 @@ export function parseArgs(args: string[]): CliArgs {
       c: "concurrency",
       v: "verbose",
       h: "help",
+      m: "merge",
     },
     default: {
       api: "vision",
       concurrency: "3",
       verbose: false,
+      merge: false,
+      "merge-separator": "\n\n========================================\n\n",
     },
   });
 
@@ -38,6 +43,8 @@ export function parseArgs(args: string[]): CliArgs {
     concurrency: parsed.concurrency ? parseInt(parsed.concurrency, 10) : 3,
     verbose: parsed.verbose,
     help: parsed.help,
+    merge: parsed.merge,
+    "merge-separator": parsed["merge-separator"],
   };
 }
 
@@ -67,6 +74,8 @@ export function validateArgs(args: CliArgs): AppConfig | null {
     filePattern: args.pattern,
     concurrency: args.concurrency,
     verbose: args.verbose,
+    merge: args.merge,
+    mergeSeparator: args["merge-separator"],
   };
 }
 
@@ -85,6 +94,8 @@ PDF テキスト抽出ツール
   -a, --api <type>          使用するAPI (vision | documentai) (デフォルト: vision)
   -p, --pattern <pattern>   ファイルパターン (例: "*.pdf", "invoice_*.pdf")
   -c, --concurrency <num>   並行処理数 (1-10) (デフォルト: 3)
+  -m, --merge               すべての抽出されたテキストを1つのファイルにマージ
+  --merge-separator <text>  マージ時のファイル間セパレータ (デフォルト: 区切り線)
   -v, --verbose             詳細なログ出力
   -h, --help                ヘルプを表示
 
@@ -101,5 +112,11 @@ PDF テキスト抽出ツール
 
   # 詳細ログ付きで並行処理数を指定
   deno run --allow-all pdf-extract ./pdfs -v -c 5
+
+  # すべてのテキストを1つのファイルにマージ
+  deno run --allow-all pdf-extract ./pdfs -m -o ./output
+
+  # カスタムセパレータでマージ
+  deno run --allow-all pdf-extract ./pdfs -m --merge-separator "\n--- 次のファイル ---\n"
   `);
 }

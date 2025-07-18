@@ -2,6 +2,7 @@ import { CloudOcrClient } from "../types/index.ts";
 import { SimpleGoogleAuth } from "../utils/auth-simple.ts";
 import { RetryHandler, RetryableError } from "../utils/retry.ts";
 import { encodeBase64Stream } from "../utils/base64.ts";
+import { estimatePdfPageCount, createPageBatches } from "../utils/pdf.ts";
 
 interface VisionApiRequest {
   requests: Array<{
@@ -67,34 +68,73 @@ export class VisionApiClientV2 implements CloudOcrClient {
   async extractTextFromPdf(pdfPath: string): Promise<string> {
     const pdfData = await Deno.readFile(pdfPath);
     
-    // PDFをページごとに画像に変換してOCRを実行する必要がある
+    // PDFの総ページ数を推定
+    const totalPages = estimatePdfPageCount(pdfData);
+    console.log(`PDFファイルの推定ページ数: ${totalPages}ページ`);
+    
     // Vision APIの同期バッチAPIを使用
     const base64Content = encodeBase64Stream(pdfData);
-
-    // 同期APIを試す
     const syncEndpoint = "https://vision.googleapis.com/v1/files:annotate";
-    const request = {
-      requests: [{
-        inputConfig: {
-          content: base64Content,
-          mimeType: "application/pdf",
-        },
-        features: [{
-          type: "DOCUMENT_TEXT_DETECTION",
+    
+    // 5ページごとのバッチを作成
+    const pageBatches = createPageBatches(totalPages, 5);
+    console.log(`処理バッチ数: ${pageBatches.length}`);
+    
+    const allTexts: string[] = [];
+    
+    // 各バッチを順次処理
+    for (let batchIndex = 0; batchIndex < pageBatches.length; batchIndex++) {
+      const pages = pageBatches[batchIndex];
+      const startPage = pages[0];
+      const endPage = pages[pages.length - 1];
+      
+      console.log(`バッチ ${batchIndex + 1}/${pageBatches.length}: ページ ${startPage}-${endPage} を処理中...`);
+      
+      const request = {
+        requests: [{
+          inputConfig: {
+            content: base64Content,
+            mimeType: "application/pdf",
+          },
+          features: [{
+            type: "DOCUMENT_TEXT_DETECTION",
+          }],
+          // 言語ヒントをrequestレベルに配置
+          imageContext: {
+            languageHints: ["ja", "en"],
+          },
+          // ページ範囲を指定
+          pages: pages,
         }],
-        // 言語ヒントをrequestレベルに配置
-        imageContext: {
-          languageHints: ["ja", "en"],
-        },
-        // ページ範囲を指定（最初の5ページまで - Vision APIの制限）
-        pages: Array.from({length: 5}, (_, i) => i + 1),
-      }],
-    };
+      };
 
-    return await this.retryHandler.withRetry(async () => {
-      const response = await this.makeRequest(syncEndpoint, request);
-      return this.extractTextFromResponse(response);
-    });
+      try {
+        const batchText = await this.retryHandler.withRetry(async () => {
+          const response = await this.makeRequest(syncEndpoint, request);
+          return this.extractTextFromResponse(response);
+        });
+        
+        if (batchText) {
+          allTexts.push(batchText);
+          console.log(`バッチ ${batchIndex + 1}/${pageBatches.length}: 処理完了`);
+        } else {
+          console.warn(`バッチ ${batchIndex + 1}/${pageBatches.length}: テキストが検出されませんでした`);
+        }
+      } catch (error) {
+        console.error(`バッチ ${batchIndex + 1}/${pageBatches.length}: エラーが発生しました`, error);
+        // エラーが発生しても他のバッチの処理を継続
+        continue;
+      }
+    }
+    
+    // すべてのバッチのテキストを結合
+    const combinedText = allTexts.join("\n\n");
+    
+    if (combinedText.trim().length === 0) {
+      console.warn("すべてのバッチでテキストが検出されませんでした");
+    }
+    
+    return combinedText;
   }
 
   private async makeRequest(endpoint: string, request: any): Promise<any> {

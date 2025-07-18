@@ -5,6 +5,8 @@ export interface AppConfig {
   filePattern?: string;
   concurrency?: number;
   verbose?: boolean;
+  merge?: boolean;
+  mergeSeparator?: string;
 }
 
 export interface ProcessingSummary {

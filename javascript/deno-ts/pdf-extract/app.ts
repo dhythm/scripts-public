@@ -5,7 +5,7 @@ import { VisionApiClientV2 } from "./clients/vision-api-v2.ts";
 import { DocumentAiClient } from "./clients/document-ai.ts";
 import { PdfTextProcessor } from "./processors/pdf-text.ts";
 import { ProgressTracker, ConcurrentProcessor } from "./utils/progress.ts";
-import { basename } from "std/path/mod.ts";
+import { basename, join } from "std/path/mod.ts";
 
 export class PdfTextExtractor {
   private logger: ConsoleLogger;
@@ -53,6 +53,11 @@ export class PdfTextExtractor {
 
       const results = await this.processFiles(pdfFiles, summary);
       this.updateSummaryFromResults(summary, results);
+
+      // マージオプションが有効な場合、すべてのテキストファイルを結合
+      if (this.config.merge && summary.successfulFiles > 0) {
+        await this.mergeTextFiles(pdfFiles, results);
+      }
 
     } catch (error) {
       this.logger.error("致命的なエラーが発生しました", error as Error);
@@ -207,5 +212,51 @@ export class PdfTextExtractor {
     }
 
     return summary;
+  }
+
+  private async mergeTextFiles(
+    files: PdfFileInfo[],
+    results: Map<PdfFileInfo, ProcessingError | null>
+  ): Promise<void> {
+    this.logger.info("\nテキストファイルのマージを開始します...");
+    
+    const successfulFiles: PdfFileInfo[] = [];
+    for (const [file, error] of results) {
+      if (!error) {
+        successfulFiles.push(file);
+      }
+    }
+
+    // ファイル名でソート（アルファベット順）
+    successfulFiles.sort((a, b) => basename(a.path).localeCompare(basename(b.path)));
+
+    const mergedTexts: string[] = [];
+    const separator = this.config.mergeSeparator || "\n\n========================================\n\n";
+
+    for (const file of successfulFiles) {
+      try {
+        const text = await Deno.readTextFile(file.outputPath);
+        const fileName = basename(file.path);
+        
+        // ファイル名をヘッダーとして追加
+        mergedTexts.push(`=== ${fileName} ===\n\n${text}`);
+      } catch (error) {
+        this.logger.error(`ファイルの読み取りに失敗: ${file.outputPath}`, error as Error);
+      }
+    }
+
+    if (mergedTexts.length > 0) {
+      const mergedContent = mergedTexts.join(separator);
+      const outputDir = this.config.outputDir || this.config.inputDir;
+      const mergedFilePath = join(outputDir, "merged_output.txt");
+      
+      try {
+        await Deno.writeTextFile(mergedFilePath, mergedContent);
+        this.logger.info(`マージファイルを作成しました: ${mergedFilePath}`);
+        this.logger.info(`${successfulFiles.length} 個のファイルをマージしました`);
+      } catch (error) {
+        this.logger.error("マージファイルの作成に失敗しました", error as Error);
+      }
+    }
   }
 }

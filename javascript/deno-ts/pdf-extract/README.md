@@ -82,11 +82,32 @@ deno task pdf-extract ./pdfs -v
 deno task pdf-extract -h
 ```
 
+### マージ機能
+
+複数のPDFから抽出したテキストを1つのファイルにまとめることができます：
+
+```bash
+# すべてのテキストを merged_output.txt に結合
+deno task pdf-extract ./pdfs -m
+
+# カスタムセパレータでマージ
+deno task pdf-extract ./pdfs -m --merge-separator "\n--- 次のファイル ---\n"
+
+# 出力ディレクトリを指定してマージ
+deno task pdf-extract ./pdfs -m -o ./output
+```
+
+マージされたファイルは、出力ディレクトリに `merged_output.txt` として保存されます。
+ファイルはアルファベット順にソートされ、各ファイルの内容の前にファイル名がヘッダーとして挿入されます。
+
 ### 複数のオプションを組み合わせる
 
 ```bash
 # Document AI を使用し、特定のパターンのファイルを5並列で処理
 deno task pdf-extract ./pdfs -a documentai -p "report_*.pdf" -c 5 -v
+
+# すべてのPDFを処理してマージ
+deno task pdf-extract ./pdfs -m -v -o ./output
 ```
 
 ## 出力

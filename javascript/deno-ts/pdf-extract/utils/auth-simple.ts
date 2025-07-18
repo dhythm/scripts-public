@@ -70,7 +70,7 @@ export class SimpleGoogleAuth {
         };
       } catch (error) {
         // サービスアカウントでの認証に失敗した場合は、gcloud CLIにフォールバック
-        console.debug("サービスアカウント認証エラー:", error);
+        // エラーログは出力しない（正常なフォールバック動作のため）
       }
     }
 
