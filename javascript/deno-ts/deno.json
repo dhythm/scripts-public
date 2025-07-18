@@ -1,0 +1,20 @@
+{
+  "tasks": {
+    "dev": "deno run --watch --allow-net --allow-read --allow-write src/main.ts",
+    "start": "deno run --allow-net --allow-read --allow-write src/main.ts",
+    "test": "deno test --allow-all",
+    "fmt": "deno fmt",
+    "lint": "deno lint",
+    "check": "deno check src/main.ts"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "deno.unstable"],
+    "strict": true
+  },
+  "imports": {
+    "std/": "https://deno.land/std@0.220.0/"
+  },
+  "exclude": [
+    ".git"
+  ]
+}
