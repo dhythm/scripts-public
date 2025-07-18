@@ -89,8 +89,8 @@ PDF テキスト抽出ツール
   -h, --help                ヘルプを表示
 
 環境変数:
-  GOOGLE_APPLICATION_CREDENTIALS    Google Cloud サービスアカウントキーのパス
-  GOOGLE_CLOUD_PROJECT             Google Cloud プロジェクトID
+  GOOGLE_APPLICATION_CREDENTIALS    Google Cloud サービスアカウントキーのパス (必須)
+  GOOGLE_CLOUD_PROJECT             Google Cloud プロジェクトID (オプション - 通常は不要)
 
 例:
   # Vision API を使用してすべての PDF を処理

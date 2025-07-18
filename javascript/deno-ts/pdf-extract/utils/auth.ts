@@ -25,8 +25,7 @@ export class GoogleAuthHelper {
 
   async authenticate(): Promise<void> {
     const credentialsPath = Deno.env.get("GOOGLE_APPLICATION_CREDENTIALS");
-    this.projectId = Deno.env.get("GOOGLE_CLOUD_PROJECT");
-
+    
     if (!credentialsPath) {
       throw new Error(
         "環境変数 GOOGLE_APPLICATION_CREDENTIALS が設定されていません。\n" +
@@ -34,19 +33,23 @@ export class GoogleAuthHelper {
       );
     }
 
-    if (!this.projectId) {
-      throw new Error(
-        "環境変数 GOOGLE_CLOUD_PROJECT が設定されていません。\n" +
-        "Google Cloud プロジェクトIDを設定してください。"
-      );
-    }
-
     try {
       const keyFile = await Deno.readTextFile(credentialsPath);
       this.credentials = JSON.parse(keyFile) as ServiceAccountKey;
       
-      if (!this.credentials.project_id) {
-        this.credentials.project_id = this.projectId;
+      // サービスアカウントキーからproject_idを取得
+      if (this.credentials.project_id) {
+        this.projectId = this.credentials.project_id;
+      } else {
+        // フォールバック: 環境変数から取得
+        this.projectId = Deno.env.get("GOOGLE_CLOUD_PROJECT");
+        if (!this.projectId) {
+          throw new Error(
+            "プロジェクトIDが見つかりません。\n" +
+            "サービスアカウントキーにproject_idが含まれているか、\n" +
+            "環境変数 GOOGLE_CLOUD_PROJECT を設定してください。"
+          );
+        }
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
