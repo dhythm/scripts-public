@@ -5,7 +5,9 @@
     "test": "deno test --allow-all",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "check": "deno check src/main.ts"
+    "check": "deno check src/main.ts",
+    "check-pdf": "deno run --allow-read src/check-pdf-text.ts",
+    "check-pdf-simple": "deno run --allow-read src/check-pdf-text-simple.ts"
   },
   "compilerOptions": {
     "lib": ["deno.window", "deno.unstable"],
