@@ -1,6 +1,7 @@
 import { CloudOcrClient } from "../types/index.ts";
-import { GoogleAuthHelper } from "../utils/auth.ts";
+import { SimpleGoogleAuth } from "../utils/auth-simple.ts";
 import { RetryHandler, RetryableError } from "../utils/retry.ts";
+import { encodeBase64Stream } from "../utils/base64.ts";
 
 interface DocumentAiRequest {
   rawDocument: {
@@ -32,19 +33,19 @@ interface DocumentAiResponse {
 }
 
 export class DocumentAiClient implements CloudOcrClient {
-  private authHelper: GoogleAuthHelper;
+  private authHelper: SimpleGoogleAuth;
   private retryHandler: RetryHandler;
   private processorId?: string;
   private location = "us";
 
   constructor() {
-    this.authHelper = new GoogleAuthHelper();
+    this.authHelper = new SimpleGoogleAuth();
     this.retryHandler = new RetryHandler();
     this.processorId = Deno.env.get("DOCUMENT_AI_PROCESSOR_ID");
   }
 
   async authenticate(): Promise<void> {
-    await this.authHelper.authenticate();
+    await this.authHelper.loadCredentials();
 
     if (!this.processorId) {
       throw new Error(
@@ -57,7 +58,7 @@ export class DocumentAiClient implements CloudOcrClient {
 
   async extractTextFromPdf(pdfPath: string): Promise<string> {
     const pdfData = await Deno.readFile(pdfPath);
-    const base64Content = btoa(String.fromCharCode(...pdfData));
+    const base64Content = encodeBase64Stream(pdfData);
 
     const request: DocumentAiRequest = {
       rawDocument: {
@@ -73,7 +74,7 @@ export class DocumentAiClient implements CloudOcrClient {
   }
 
   private async makeRequest(request: DocumentAiRequest): Promise<DocumentAiResponse> {
-    const accessToken = await this.authHelper.getAccessToken();
+    const authHeaders = await this.authHelper.getAuthHeaders();
     const projectId = this.authHelper.getProjectId();
     
     const endpoint = `https://${this.location}-documentai.googleapis.com/v1/projects/${projectId}/locations/${this.location}/processors/${this.processorId}:process`;
@@ -81,7 +82,7 @@ export class DocumentAiClient implements CloudOcrClient {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${accessToken}`,
+        ...authHeaders,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(request),

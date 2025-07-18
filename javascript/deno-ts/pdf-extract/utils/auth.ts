@@ -75,10 +75,22 @@ export class GoogleAuthHelper {
     }
 
     const jwt = await this.createJWT();
+    
     const tokenResponse = await this.exchangeJWTForToken(jwt);
     
-    this.accessToken = tokenResponse.access_token;
-    this.tokenExpiry = new Date(Date.now() + (tokenResponse.expires_in - 60) * 1000);
+    // Google OAuth2 APIのレスポンスからaccess_tokenを取得
+    if (tokenResponse.access_token) {
+      this.accessToken = tokenResponse.access_token;
+      this.tokenExpiry = new Date(Date.now() + (tokenResponse.expires_in - 60) * 1000);
+    } else if (tokenResponse.id_token) {
+      // id_tokenが返された場合はエラー（デバッグモードでのみ表示）
+      console.debug("エラー: id_tokenが返されました。access_tokenが必要です。");
+      console.debug("トークンレスポンス:", tokenResponse);
+      throw new Error("認証エラー: access_tokenではなくid_tokenが返されました");
+    } else {
+      console.log("トークン取得失敗:", tokenResponse);
+      throw new Error("認証エラー: access_tokenが取得できませんでした");
+    }
     
     return this.accessToken;
   }
@@ -111,7 +123,7 @@ export class GoogleAuthHelper {
         "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/documentai",
       ].join(" "),
-      aud: this.credentials.token_uri,
+      aud: "https://oauth2.googleapis.com/token",
       exp: now + 3600,
       iat: now,
     };
@@ -125,14 +137,12 @@ export class GoogleAuthHelper {
     return `${signatureInput}.${signature}`;
   }
 
-  private async exchangeJWTForToken(jwt: string): Promise<{
-    access_token: string;
-    expires_in: number;
-  }> {
+  private async exchangeJWTForToken(jwt: string): Promise<any> {
     if (!this.credentials) {
       throw new Error("認証情報が設定されていません。");
     }
 
+    
     const response = await fetch(this.credentials.token_uri, {
       method: "POST",
       headers: {
@@ -149,7 +159,8 @@ export class GoogleAuthHelper {
       throw new Error(`トークン取得エラー: ${error}`);
     }
 
-    return await response.json();
+    const result = await response.json();
+    return result;
   }
 
   private base64urlEncode(data: string): string {

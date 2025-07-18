@@ -1,7 +1,7 @@
 import { AppConfig, ProcessingSummary, ProcessingError, CloudOcrClient, PdfFileInfo } from "./types/index.ts";
 import { ConsoleLogger } from "./utils/logger.ts";
 import { DenoFileSystemHandler } from "./handlers/file-system.ts";
-import { VisionApiClient } from "./clients/vision-api.ts";
+import { VisionApiClientV2 } from "./clients/vision-api-v2.ts";
 import { DocumentAiClient } from "./clients/document-ai.ts";
 import { PdfTextProcessor } from "./processors/pdf-text.ts";
 import { ProgressTracker, ConcurrentProcessor } from "./utils/progress.ts";
@@ -72,7 +72,7 @@ export class PdfTextExtractor {
         return new DocumentAiClient();
       case "vision":
       default:
-        return new VisionApiClient();
+        return new VisionApiClientV2();
     }
   }
 
@@ -144,8 +144,13 @@ export class PdfTextExtractor {
     try {
       const result = await this.processor.processFile(fileInfo.path);
 
-      if (!result.successful || !result.text) {
+      if (!result.successful) {
         throw result.error || new Error("テキスト抽出に失敗しました");
+      }
+
+      if (!result.text || result.text.trim().length === 0) {
+        this.logger.warn(`${fileName}: テキストが検出されませんでした（画像のみのPDFの可能性があります）`);
+        throw new Error("テキストが検出されませんでした（画像のみのPDFの可能性があります）");
       }
 
       await this.fileHandler.saveTextToFile(result.text, fileInfo.outputPath);

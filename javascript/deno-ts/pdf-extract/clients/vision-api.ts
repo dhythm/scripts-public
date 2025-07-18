@@ -1,6 +1,7 @@
 import { CloudOcrClient } from "../types/index.ts";
-import { GoogleAuthHelper } from "../utils/auth.ts";
+import { SimpleGoogleAuth } from "../utils/auth-simple.ts";
 import { RetryHandler, RetryableError } from "../utils/retry.ts";
+import { encodeBase64Stream } from "../utils/base64.ts";
 
 interface VisionApiRequest {
   requests: Array<{
@@ -35,22 +36,24 @@ interface VisionApiResponse {
 }
 
 export class VisionApiClient implements CloudOcrClient {
-  private authHelper: GoogleAuthHelper;
+  private authHelper: SimpleGoogleAuth;
   private retryHandler: RetryHandler;
   private apiEndpoint = "https://vision.googleapis.com/v1/files:annotate";
 
   constructor() {
-    this.authHelper = new GoogleAuthHelper();
+    this.authHelper = new SimpleGoogleAuth();
     this.retryHandler = new RetryHandler();
   }
 
   async authenticate(): Promise<void> {
-    await this.authHelper.authenticate();
+    await this.authHelper.loadCredentials();
   }
 
   async extractTextFromPdf(pdfPath: string): Promise<string> {
     const pdfData = await Deno.readFile(pdfPath);
-    const base64Content = btoa(String.fromCharCode(...pdfData));
+    
+    // 大きなファイルでもスタックオーバーフローを避けるためにチャンク処理
+    const base64Content = encodeBase64Stream(pdfData);
 
     const request: VisionApiRequest = {
       requests: [{
@@ -60,7 +63,6 @@ export class VisionApiClient implements CloudOcrClient {
         },
         features: [{
           type: "DOCUMENT_TEXT_DETECTION",
-          maxResults: 50,
         }],
       }],
     };
@@ -72,12 +74,12 @@ export class VisionApiClient implements CloudOcrClient {
   }
 
   private async makeRequest(request: VisionApiRequest): Promise<VisionApiResponse> {
-    const accessToken = await this.authHelper.getAccessToken();
+    const authHeaders = await this.authHelper.getAuthHeaders();
     
     const response = await fetch(this.apiEndpoint, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${accessToken}`,
+        ...authHeaders,
         "Content-Type": "application/json",
         "x-goog-user-project": this.authHelper.getProjectId(),
       },
@@ -109,6 +111,8 @@ export class VisionApiClient implements CloudOcrClient {
   }
 
   private extractTextFromResponse(response: VisionApiResponse): string {
+    console.debug("Vision API Response:", JSON.stringify(response, null, 2));
+    
     if (!response.responses || response.responses.length === 0) {
       throw new Error("Vision API レスポンスが空です");
     }
@@ -121,7 +125,8 @@ export class VisionApiClient implements CloudOcrClient {
       );
     }
 
-    if (!result.fullTextAnnotation) {
+    if (!result.fullTextAnnotation || !result.fullTextAnnotation.text) {
+      console.warn("Vision API: テキストが検出されませんでした");
       return "";
     }
 

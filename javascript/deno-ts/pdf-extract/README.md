@@ -24,12 +24,29 @@ Google Cloud Vision API または Document AI を使用して PDF ファイル�
 # サービスアカウントキーのパス
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 
-# Google Cloud プロジェクトID
+# Google Cloud プロジェクトID（オプション - サービスアカウントから自動取得可能）
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 
 # Document AI を使用する場合（オプション）
 export DOCUMENT_AI_PROCESSOR_ID="your-processor-id"
 ```
+
+### 3. 認証方法
+
+以下のいずれかの方法で認証できます：
+
+#### 方法1: Google Cloud APIキー（推奨）
+```bash
+export GOOGLE_API_KEY="your-api-key"
+```
+
+#### 方法2: gcloud CLIを使用
+```bash
+# gcloud CLIでログイン
+gcloud auth application-default login
+```
+
+#### 方法3: サービスアカウント（上記の環境変数設定）
 
 ## 使用方法
 
@@ -86,7 +103,11 @@ deno task pdf-extract ./pdfs -a documentai -p "report_*.pdf" -c 5 -v
 エラー: 環境変数 GOOGLE_APPLICATION_CREDENTIALS が設定されていません
 ```
 
-サービスアカウントキーのパスが正しく設定されているか確認してください。
+認証方法のセクションを参照して、適切な認証方法を設定してください。
+
+#### Maximum call stack size exceeded エラー
+
+大きなPDFファイルを処理する際に発生する場合があります。このエラーは内部的に処理されるため、通常は問題ありません。
 
 ### レート制限エラー
 
