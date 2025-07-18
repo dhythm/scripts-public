@@ -6,6 +6,11 @@ export class SimpleGoogleAuth {
   private credentials?: ServiceAccountKey;
   private projectId?: string;
   private authHelper?: GoogleAuthHelper;
+  private verbose: boolean = false;
+
+  constructor(verbose: boolean = false) {
+    this.verbose = verbose;
+  }
 
   async loadCredentials(): Promise<void> {
     const credentialsPath = Deno.env.get("GOOGLE_APPLICATION_CREDENTIALS");
@@ -36,7 +41,7 @@ export class SimpleGoogleAuth {
     }
 
     // GoogleAuthHelperを初期化
-    this.authHelper = new GoogleAuthHelper();
+    this.authHelper = new GoogleAuthHelper(this.verbose);
     await this.authHelper.authenticate();
   }
 
@@ -100,7 +105,9 @@ export class SimpleGoogleAuth {
         "Authorization": `Bearer ${accessToken}`,
       };
     } catch (error) {
-      console.error("gcloud CLIでの認証に失敗しました:", error);
+      if (this.verbose) {
+        console.error("gcloud CLIでの認証に失敗しました:", error);
+      }
       throw new Error(
         "認証に失敗しました。以下のいずれかの方法で認証してください:\n" +
         "1. 環境変数 GOOGLE_API_KEY にAPIキーを設定\n" +

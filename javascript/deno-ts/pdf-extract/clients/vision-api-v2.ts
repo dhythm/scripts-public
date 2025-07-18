@@ -55,9 +55,11 @@ export class VisionApiClientV2 implements CloudOcrClient {
   private authHelper: SimpleGoogleAuth;
   private retryHandler: RetryHandler;
   private apiEndpoint = "https://vision.googleapis.com/v1/files:asyncBatchAnnotate";
+  private verbose: boolean;
 
-  constructor() {
-    this.authHelper = new SimpleGoogleAuth();
+  constructor(verbose: boolean = false) {
+    this.verbose = verbose;
+    this.authHelper = new SimpleGoogleAuth(verbose);
     this.retryHandler = new RetryHandler();
   }
 

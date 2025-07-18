@@ -37,9 +37,11 @@ export class DocumentAiClient implements CloudOcrClient {
   private retryHandler: RetryHandler;
   private processorId?: string;
   private location = "us";
+  private verbose: boolean;
 
-  constructor() {
-    this.authHelper = new SimpleGoogleAuth();
+  constructor(verbose: boolean = false) {
+    this.verbose = verbose;
+    this.authHelper = new SimpleGoogleAuth(verbose);
     this.retryHandler = new RetryHandler();
     this.processorId = Deno.env.get("DOCUMENT_AI_PROCESSOR_ID");
   }

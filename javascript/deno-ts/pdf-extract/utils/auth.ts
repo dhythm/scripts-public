@@ -22,6 +22,11 @@ export class GoogleAuthHelper {
   private projectId?: string;
   private accessToken?: string;
   private tokenExpiry?: Date;
+  private verbose: boolean = false;
+
+  constructor(verbose: boolean = false) {
+    this.verbose = verbose;
+  }
 
   async authenticate(): Promise<void> {
     const credentialsPath = Deno.env.get("GOOGLE_APPLICATION_CREDENTIALS");
@@ -86,16 +91,20 @@ export class GoogleAuthHelper {
       this.accessToken = tokenResponse.access_token;
       this.tokenExpiry = new Date(Date.now() + (tokenResponse.expires_in - 60) * 1000);
     } else if (tokenResponse.id_token) {
-      // id_tokenが返された場合はエラー（デバッグモードでのみ表示）
-      console.debug("エラー: id_tokenが返されました。access_tokenが必要です。");
-      console.debug("トークンレスポンス:", tokenResponse);
+      // id_tokenが返された場合はエラー（verboseモードでのみ表示）
+      if (this.verbose) {
+        console.debug("エラー: id_tokenが返されました。access_tokenが必要です。");
+        console.debug("トークンレスポンス:", tokenResponse);
+      }
       throw new Error("認証エラー: access_tokenではなくid_tokenが返されました");
     } else {
-      console.log("トークン取得失敗:", tokenResponse);
+      if (this.verbose) {
+        console.log("トークン取得失敗:", tokenResponse);
+      }
       throw new Error("認証エラー: access_tokenが取得できませんでした");
     }
     
-    return this.accessToken;
+    return this.accessToken!;
   }
 
   getProjectId(): string {

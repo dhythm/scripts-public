@@ -87,7 +87,7 @@ deno task pdf-extract -h
 複数のPDFから抽出したテキストを1つのファイルにまとめることができます：
 
 ```bash
-# すべてのテキストを merged_output.txt に結合
+# すべてのテキストを merged_output.txt に結合（個別ファイルは作成されません）
 deno task pdf-extract ./pdfs -m
 
 # カスタムセパレータでマージ
@@ -97,7 +97,8 @@ deno task pdf-extract ./pdfs -m --merge-separator "\n--- 次のファイル ---\
 deno task pdf-extract ./pdfs -m -o ./output
 ```
 
-マージされたファイルは、出力ディレクトリに `merged_output.txt` として保存されます。
+**注意**: `-m` オプションを使用すると、個別のテキストファイルは作成されず、`merged_output.txt` のみが出力されます。
+マージされたファイルは、出力ディレクトリに保存されます。
 ファイルはアルファベット順にソートされ、各ファイルの内容の前にファイル名がヘッダーとして挿入されます。
 
 ### 複数のオプションを組み合わせる

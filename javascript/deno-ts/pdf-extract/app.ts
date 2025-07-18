@@ -13,6 +13,7 @@ export class PdfTextExtractor {
   private ocrClient: CloudOcrClient;
   private processor: PdfTextProcessor;
   private startTime: number = 0;
+  private extractedTexts: Map<string, string> = new Map();
 
   constructor(private config: AppConfig) {
     this.logger = new ConsoleLogger(config.verbose);
@@ -54,9 +55,9 @@ export class PdfTextExtractor {
       const results = await this.processFiles(pdfFiles, summary);
       this.updateSummaryFromResults(summary, results);
 
-      // マージオプションが有効な場合、すべてのテキストファイルを結合
+      // マージオプションが有効な場合、メモリ上のテキストを結合して保存
       if (this.config.merge && summary.successfulFiles > 0) {
-        await this.mergeTextFiles(pdfFiles, results);
+        await this.createMergedFile();
       }
 
     } catch (error) {
@@ -74,10 +75,10 @@ export class PdfTextExtractor {
   private createOcrClient(): CloudOcrClient {
     switch (this.config.apiType) {
       case "documentai":
-        return new DocumentAiClient();
+        return new DocumentAiClient(this.config.verbose || false);
       case "vision":
       default:
-        return new VisionApiClientV2();
+        return new VisionApiClientV2(this.config.verbose || false);
     }
   }
 
@@ -158,11 +159,18 @@ export class PdfTextExtractor {
         throw new Error("テキストが検出されませんでした（画像のみのPDFの可能性があります）");
       }
 
-      await this.fileHandler.saveTextToFile(result.text, fileInfo.outputPath);
-      
-      this.logger.debug(
-        `保存完了: ${fileInfo.outputPath} (${result.pageCount}ページ, ${result.text.length}文字)`
-      );
+      // マージモードの場合はメモリに保持、そうでなければファイルに保存
+      if (this.config.merge) {
+        this.extractedTexts.set(fileInfo.path, result.text);
+        this.logger.debug(
+          `メモリに保存: ${fileName} (${result.pageCount}ページ, ${result.text.length}文字)`
+        );
+      } else {
+        await this.fileHandler.saveTextToFile(result.text, fileInfo.outputPath);
+        this.logger.debug(
+          `保存完了: ${fileInfo.outputPath} (${result.pageCount}ページ, ${result.text.length}文字)`
+        );
+      }
 
       progressTracker.completeFile();
       return null;
@@ -214,35 +222,23 @@ export class PdfTextExtractor {
     return summary;
   }
 
-  private async mergeTextFiles(
-    files: PdfFileInfo[],
-    results: Map<PdfFileInfo, ProcessingError | null>
-  ): Promise<void> {
-    this.logger.info("\nテキストファイルのマージを開始します...");
+  private async createMergedFile(): Promise<void> {
+    this.logger.info("\nテキストのマージを開始します...");
     
-    const successfulFiles: PdfFileInfo[] = [];
-    for (const [file, error] of results) {
-      if (!error) {
-        successfulFiles.push(file);
-      }
-    }
-
-    // ファイル名でソート（アルファベット順）
-    successfulFiles.sort((a, b) => basename(a.path).localeCompare(basename(b.path)));
+    // ファイルパスでソート（アルファベット順）
+    const sortedPaths = Array.from(this.extractedTexts.keys()).sort((a, b) => 
+      basename(a).localeCompare(basename(b))
+    );
 
     const mergedTexts: string[] = [];
     const separator = this.config.mergeSeparator || "\n\n========================================\n\n";
 
-    for (const file of successfulFiles) {
-      try {
-        const text = await Deno.readTextFile(file.outputPath);
-        const fileName = basename(file.path);
-        
-        // ファイル名をヘッダーとして追加
-        mergedTexts.push(`=== ${fileName} ===\n\n${text}`);
-      } catch (error) {
-        this.logger.error(`ファイルの読み取りに失敗: ${file.outputPath}`, error as Error);
-      }
+    for (const path of sortedPaths) {
+      const text = this.extractedTexts.get(path)!;
+      const fileName = basename(path);
+      
+      // ファイル名をヘッダーとして追加
+      mergedTexts.push(`=== ${fileName} ===\n\n${text}`);
     }
 
     if (mergedTexts.length > 0) {
@@ -253,7 +249,7 @@ export class PdfTextExtractor {
       try {
         await Deno.writeTextFile(mergedFilePath, mergedContent);
         this.logger.info(`マージファイルを作成しました: ${mergedFilePath}`);
-        this.logger.info(`${successfulFiles.length} 個のファイルをマージしました`);
+        this.logger.info(`${sortedPaths.length} 個のファイルをマージしました`);
       } catch (error) {
         this.logger.error("マージファイルの作成に失敗しました", error as Error);
       }
