@@ -45,7 +45,7 @@ store.addTodo('REST API の実装');
 console.log('\n現在の Todo リスト:');
 console.log(store.getTodos());
 
-async function runServer() {
+async function _runServer() {
   const port = 8000;
   console.log(`\nHTTPサーバーを起動します: http://localhost:${port}/`);
   console.log('Ctrl+C で終了します');
