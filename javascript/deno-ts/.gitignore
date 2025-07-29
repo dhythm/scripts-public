@@ -4,4 +4,4 @@
 .env.local
 .env.*.local
 
-service_account_key.json
+service-account-key.json
