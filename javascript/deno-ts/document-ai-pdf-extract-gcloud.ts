@@ -809,6 +809,32 @@ async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
 }
 
 /**
+ * 出力ファイル名を生成
+ */
+function generateOutputFilename(pdfPath: string, extension: string): string {
+  // パスの区切り文字を判定
+  const lastSlashIndex = pdfPath.lastIndexOf('/');
+  const lastBackslashIndex = pdfPath.lastIndexOf('\\');
+  const separatorIndex = Math.max(lastSlashIndex, lastBackslashIndex);
+  
+  let dir = '';
+  let filename = pdfPath;
+  
+  if (separatorIndex !== -1) {
+    dir = pdfPath.substring(0, separatorIndex);
+    filename = pdfPath.substring(separatorIndex + 1);
+  }
+  
+  const nameWithoutExt = filename.replace(/\.pdf$/i, '');
+  
+  if (dir) {
+    return `${dir}/${nameWithoutExt}.${extension}`;
+  } else {
+    return `${nameWithoutExt}.${extension}`;
+  }
+}
+
+/**
  * メインエントリポイント
  */
 async function main(): Promise<void> {
@@ -821,11 +847,12 @@ async function main(): Promise<void> {
         "使用方法: ./document-ai-pdf-extract-gcloud.ts <PDFファイルパス> [オプション]"
       );
       console.error("\nオプション:");
-      console.error("  --json       JSON形式で出力（構造化データ）");
-      console.error("  --markdown   OpenAI APIを使用してマークダウンに変換");
+      console.error("  --json       JSON形式で保存（構造化データ）");
+      console.error("  --markdown   OpenAI APIを使用してマークダウンに変換して保存");
       console.error(
         "  --model      使用するOpenAIモデル（デフォルト: gpt-4o-mini）"
       );
+      console.error("  --output     出力ファイル名を指定（省略時は入力ファイル名を使用）");
       console.error("  --help       このヘルプを表示");
       console.error("\n環境変数:");
       console.error(
@@ -840,22 +867,31 @@ async function main(): Promise<void> {
       console.error("  2. gcloud auth application-default login を実行済み");
       console.error("  3. Document AI API が有効化されている");
       console.error("\n使用例:");
-      console.error("  # 構造化テキストとして出力");
+      console.error("  # 構造化テキストをtxtファイルに保存");
       console.error("  ./document-ai-pdf-extract-gcloud.ts input.pdf");
+      console.error("  # → input.txt が生成される");
       console.error("");
-      console.error("  # マークダウンに変換");
+      console.error("  # マークダウンに変換してmdファイルに保存");
       console.error(
         "  ./document-ai-pdf-extract-gcloud.ts input.pdf --markdown"
       );
+      console.error("  # → input.md が生成される");
       console.error("");
-      console.error("  # GPT-4を指定してマークダウンに変換");
+      console.error("  # JSON形式でjsonファイルに保存");
       console.error(
-        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --markdown --model gpt-4"
+        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --json"
+      );
+      console.error("  # → input.json が生成される");
+      console.error("");
+      console.error("  # 出力ファイル名を指定");
+      console.error(
+        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --markdown --output output.md"
       );
       console.error("\n注意事項:");
       console.error("  - Imageless mode により最大30ページまで処理可能");
       console.error("  - 大きなPDFファイルは処理に時間がかかります");
       console.error("  - OpenAI APIの使用には料金が発生します");
+      console.error("  - 既存のファイルは上書きされます");
       Deno.exit(1);
     }
 
@@ -888,9 +924,14 @@ async function main(): Promise<void> {
     // 構造化データ抽出の実行
     const structuredData = await extractTextFromPdf(pdfPath);
 
-    // 出力形式の判定
+    // 出力ファイル名の決定
+    const outputIndex = args.indexOf("--output");
+    let outputPath: string;
+    let content: string;
+    
+    // 出力形式の判定と内容の生成
     if (args.includes("--markdown")) {
-      // マークダウン形式で出力
+      // マークダウン形式で保存
       try {
         // モデルの取得
         const modelIndex = args.indexOf("--model");
@@ -899,27 +940,40 @@ async function main(): Promise<void> {
             ? args[modelIndex + 1]
             : "gpt-4o-mini";
 
-        const markdown = await convertToMarkdownWithOpenAI(
-          structuredData,
-          model
-        );
-        console.log(markdown);
+        content = await convertToMarkdownWithOpenAI(structuredData, model);
+        outputPath = outputIndex !== -1 && args[outputIndex + 1]
+          ? args[outputIndex + 1]
+          : generateOutputFilename(pdfPath, "md");
       } catch (error) {
         console.error("マークダウン変換エラー:", (error as Error).message);
         Deno.exit(1);
       }
     } else if (args.includes("--json")) {
-      // JSON形式で出力（構造化データ）
-      console.log(JSON.stringify(structuredData, null, 2));
+      // JSON形式で保存
+      content = JSON.stringify(structuredData, null, 2);
+      outputPath = outputIndex !== -1 && args[outputIndex + 1]
+        ? args[outputIndex + 1]
+        : generateOutputFilename(pdfPath, "json");
     } else {
-      // フォーマット済みテキストで出力
-      console.log("\n" + formatStructuredOutput(structuredData));
+      // デフォルト：構造化テキスト形式で保存
+      content = formatStructuredOutput(structuredData);
+      outputPath = outputIndex !== -1 && args[outputIndex + 1]
+        ? args[outputIndex + 1]
+        : generateOutputFilename(pdfPath, "txt");
+    }
 
-      // デバッグモードの場合は元のテキストも出力
-      if (Deno.env.get("DEBUG")) {
-        console.log("\n\n=== 元のテキスト（全文） ===\n");
-        console.log(structuredData.fullText);
-      }
+    // ファイルに保存
+    try {
+      await Deno.writeTextFile(outputPath, content);
+      console.log(`結果を保存しました: ${outputPath}`);
+      
+      // ファイルサイズを表示
+      const fileInfo = await Deno.stat(outputPath);
+      const fileSizeKB = (fileInfo.size / 1024).toFixed(2);
+      console.log(`ファイルサイズ: ${fileSizeKB} KB`);
+    } catch (error) {
+      console.error(`ファイルの保存に失敗しました: ${(error as Error).message}`);
+      Deno.exit(1);
     }
   } catch (error) {
     console.error("エラーが発生しました:", (error as Error).message);
