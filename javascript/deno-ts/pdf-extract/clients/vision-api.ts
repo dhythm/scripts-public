@@ -111,7 +111,7 @@ export class VisionApiClient implements CloudOcrClient {
   }
 
   private extractTextFromResponse(response: VisionApiResponse): string {
-    console.debug("Vision API Response structure:", JSON.stringify(Object.keys(response), null, 2));
+    console.debug("Vision API Response:", JSON.stringify(response, null, 2));
     
     if (!response.responses || response.responses.length === 0) {
       throw new Error("Vision API レスポンスが空です");
@@ -125,41 +125,11 @@ export class VisionApiClient implements CloudOcrClient {
       );
     }
 
-    // レスポンスが入れ子になっている場合の処理
-    if ((result as any).responses && Array.isArray((result as any).responses)) {
-      const texts: string[] = [];
-      
-      for (const pageResponse of (result as any).responses) {
-        if (pageResponse.error) {
-          console.warn("ページ処理エラー:", pageResponse.error);
-          continue;
-        }
-        
-        if (pageResponse.fullTextAnnotation?.text) {
-          texts.push(pageResponse.fullTextAnnotation.text);
-        } else if (pageResponse.textAnnotations && pageResponse.textAnnotations.length > 0) {
-          // 最初のtextAnnotationには全テキストが含まれる
-          texts.push(pageResponse.textAnnotations[0].description);
-        }
-      }
-      
-      const combinedText = texts.join("\n\n");
-      if (combinedText.trim().length > 0) {
-        return combinedText;
-      }
+    if (!result.fullTextAnnotation || !result.fullTextAnnotation.text) {
+      console.warn("Vision API: テキストが検出されませんでした");
+      return "";
     }
 
-    // 単一ページのレスポンス
-    if (result.fullTextAnnotation?.text) {
-      return result.fullTextAnnotation.text;
-    }
-
-    // textAnnotationsからテキストを取得
-    if ((result as any).textAnnotations && (result as any).textAnnotations.length > 0) {
-      return (result as any).textAnnotations[0].description;
-    }
-
-    console.warn("Vision API: テキストが検出されませんでした");
-    return "";
+    return result.fullTextAnnotation.text;
   }
 }
