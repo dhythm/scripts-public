@@ -411,6 +411,31 @@ function extractTableData(
 }
 
 /**
+ * テーブルの内容が重複しているかチェック
+ */
+function isTableDuplicate(
+  table1: { headers: string[][]; rows: string[][] },
+  table2: { headers: string[][]; rows: string[][] }
+): boolean {
+  // ヘッダーの比較
+  if (table1.headers.length !== table2.headers.length) return false;
+  for (let i = 0; i < table1.headers.length; i++) {
+    if (table1.headers[i].join('|') !== table2.headers[i].join('|')) return false;
+  }
+  
+  // 行数が大きく異なる場合は別のテーブルと判断
+  if (Math.abs(table1.rows.length - table2.rows.length) > 2) return false;
+  
+  // 最初の数行を比較して同じかチェック
+  const compareRows = Math.min(3, table1.rows.length, table2.rows.length);
+  for (let i = 0; i < compareRows; i++) {
+    if (table1.rows[i].join('|') !== table2.rows[i].join('|')) return false;
+  }
+  
+  return true;
+}
+
+/**
  * Document AI レスポンスから構造化されたデータを抽出
  */
 function processDocumentAiResponse(
@@ -451,6 +476,9 @@ function processDocumentAiResponse(
     }));
   }
 
+  // 処理済みテーブルを追跡
+  const processedTables: Array<{ headers: string[][]; rows: string[][] }> = [];
+
   // ページごとの構造化データの抽出
   if (response.document.pages) {
     response.document.pages.forEach((page, pageIndex) => {
@@ -481,7 +509,7 @@ function processDocumentAiResponse(
         });
       }
 
-      // テーブルの抽出
+      // テーブルの抽出（重複チェック付き）
       if (page.tables) {
         page.tables.forEach((table) => {
           const tableText = extractTextFromAnchor(
@@ -490,13 +518,21 @@ function processDocumentAiResponse(
           );
           const tableData = extractTableData(fullText, table);
 
-          pageData.elements.push({
-            type: "table",
-            content: tableText,
-            metadata: {
-              tableData,
-            },
-          });
+          // 重複チェック
+          const isDuplicate = processedTables.some(processed => 
+            isTableDuplicate(processed, tableData)
+          );
+
+          if (!isDuplicate) {
+            processedTables.push(tableData);
+            pageData.elements.push({
+              type: "table",
+              content: tableText,
+              metadata: {
+                tableData,
+              },
+            });
+          }
         });
       }
 
@@ -632,13 +668,19 @@ function createMarkdownPrompt(data: StructuredOutput): string {
 3. 見出しと思われる部分は適切な見出しレベル（#, ##, ###）を使用
 4. リストと思われる部分は適切なリスト形式を使用
 5. 元の文書の階層構造を維持
-6. 不要な重複は削除
+6. 不要な重複は削除（同じ表や内容が複数回出現する場合は1回のみ出力）
 7. OCRの誤認識と思われる部分は文脈から修正
+
+重要な注意事項：
+- ファイル名やファイルパスは一切出力しない
+- コードブロック記号（\`\`\`markdown等）は使用しない
+- マークダウンコンテンツのみを出力する
+- 同じ内容の表が複数回出現する場合は、最も構造化された形式のものを1回だけ出力する
 
 構造化データ：
 ${JSON.stringify(data, null, 2)}
 
-マークダウン形式で出力してください：`;
+純粋なマークダウンコンテンツのみを出力してください：`;
 
   return prompt;
 }
@@ -675,7 +717,7 @@ async function processLargeDocument(
         {
           role: "system",
           content:
-            "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。",
+            "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。元の文書の構造と内容を忠実に再現してください。ファイル名やコードブロック記号は一切出力せず、純粋なマークダウンコンテンツのみを出力してください。",
         },
         {
           role: "user",
@@ -687,10 +729,30 @@ async function processLargeDocument(
     });
 
     const content = response.choices[0]?.message?.content || "";
-    results.push(content);
+    results.push(cleanupMarkdownOutput(content));
   }
 
   return results.join("\n\n---\n\n"); // ページ区切りを追加
+}
+
+/**
+ * マークダウン出力をクリーンアップ
+ */
+function cleanupMarkdownOutput(content: string): string {
+  // ファイル名参照を削除（例: @javascript/000928313.md）
+  let cleaned = content.replace(/^@[^\s]+\s*/gm, '');
+  
+  // コードブロック記号を削除
+  cleaned = cleaned.replace(/^```markdown\s*$/gm, '');
+  cleaned = cleaned.replace(/^```\s*$/gm, '');
+  
+  // 連続する改行を正規化（3つ以上の改行を2つに）
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  // 先頭と末尾の空白を削除
+  cleaned = cleaned.trim();
+  
+  return cleaned;
 }
 
 /**
@@ -698,7 +760,7 @@ async function processLargeDocument(
  */
 async function convertToMarkdownWithOpenAI(
   data: StructuredOutput,
-  model: string = "gpt-4.1-mini"
+  model: string = "gpt-4o-mini"
 ): Promise<string> {
   // APIキーの確認
   const apiKey = Deno.env.get("OPENAI_API_KEY");
@@ -715,38 +777,43 @@ async function convertToMarkdownWithOpenAI(
   console.error(`使用モデル: ${model}`);
 
   try {
+    let rawContent: string;
+    
     // ドキュメントが大きい場合は分割処理
     if (data.pages.length > 10) {
       console.error("大きなドキュメントのため、分割処理を実行します。");
-      return await processLargeDocument(openai, data, model);
+      rawContent = await processLargeDocument(openai, data, model);
+    } else {
+      // 通常の処理
+      const prompt = createMarkdownPrompt(data);
+
+      const response = await openai.chat.completions.create({
+        model: model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。元の文書の構造と内容を忠実に再現してください。ファイル名やコードブロック記号は一切出力せず、純粋なマークダウンコンテンツのみを出力してください。",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.1, // 低い温度で一貫性を保つ
+        max_tokens: 4000,
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("OpenAI APIからの応答が空です");
+      }
+      
+      rawContent = content;
     }
 
-    // 通常の処理
-    const prompt = createMarkdownPrompt(data);
-
-    const response = await openai.chat.completions.create({
-      model: model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。元の文書の構造と内容を忠実に再現してください。",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0.1, // 低い温度で一貫性を保つ
-      max_tokens: 4000,
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("OpenAI APIからの応答が空です");
-    }
-
-    return content;
+    // 出力をクリーンアップ
+    return cleanupMarkdownOutput(rawContent);
   } catch (error) {
     if (error instanceof Error) {
       // レート制限エラーの場合
