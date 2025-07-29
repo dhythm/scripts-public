@@ -573,6 +573,16 @@ function processDocumentAiResponse(
 }
 
 /**
+ * 総括表の医薬品番号を持つ行を検出するヘルパー関数
+ */
+function isSummaryTableContinuationRow(row: string[]): boolean {
+  // 最初のセルが空で、2番目以降にデータがある場合は継続行
+  return row.length > 1 && 
+         (!row[0] || row[0].trim() === '') && 
+         row.some((cell, index) => index > 0 && cell && cell.trim() !== '');
+}
+
+/**
  * 構造化データをマークダウン変換用の形式で出力
  */
 function formatStructuredOutput(data: StructuredOutput): string {
@@ -662,20 +672,46 @@ function formatStructuredOutput(data: StructuredOutput): string {
 function createMarkdownPrompt(data: StructuredOutput): string {
   const prompt = `以下は日本語PDFドキュメントをOCRで構造化したデータです。このデータを元の文書の構造と内容を正確に再現したマークダウン形式に変換してください。
 
+極めて重要な指示：
+- **与えられた構造化データに含まれる内容のみを出力し、データに存在しない要素は一切追加しない**
+- **各ページの内容は構造化データに記載されている通りに1回だけ出力する**
+- **構造化データのページ順序と要素順序を厳密に守る**
+- **同じ表や内容を複数回出力しない**
+
+階層構造の指示（必ず従ってください）：
+- 「新医薬品一覧表」のような主要タイトルは # （レベル1）
+- 「新医薬品の薬価算定について」のような大セクションは ## （レベル2）
+- 「整理番号 XX-X-X-X」は ### （レベル3）
+- 「薬効分類」「成分名」「算定方式」「主な用法・用量」などは #### （レベル4）
+- 「有用性加算」「補正加算」「市場規模予測」などのサブセクションも #### （レベル4）
+- さらに詳細な項目（「イ. 効能・効果」「ロ. 薬理作用」など）は ##### （レベル5）
+
 要件：
 1. 表は適切なマークダウンテーブル形式で表現
 2. 段落は適切に改行で区切る
-3. 見出しと思われる部分は適切な見出しレベル（#, ##, ###）を使用
+3. 上記の階層構造ルールに従って見出しレベルを設定
 4. リストと思われる部分は適切なリスト形式を使用
-5. 元の文書の階層構造を維持
-6. 不要な重複は削除（同じ表や内容が複数回出現する場合は1回のみ出力）
-7. OCRの誤認識と思われる部分は文脈から修正
+5. 元の文書の階層構造と情報の関係性を維持
+6. OCRの誤認識と思われる部分は文脈から修正
 
-重要な注意事項：
+テーブル処理の特別な指示：
+- 同じ医薬品の複数規格（例：50mg錠、100mg錠）は同じ行にまとめる
+- 空のセルは適切に処理し、行の構造を維持
+- 整理番号（例：整理番号 22-4-内-1）の直前に個別の表を挿入しない
+- 整理番号から始まるセクションは、その整理番号から直接開始する
+- PDFで同じセル内に複数行ある場合は、マークダウンでも同じセルにまとめる（必要に応じて<br>タグを使用）
+
+情報の整理：
+- 各医薬品のセクションは整理番号から始める
+- 薬効分類、成分名、新薬収載希望者、販売名などは明確に区別して記載
+- 算定方式とその詳細（比較薬、補正加算など）は階層的に整理
+- 「薬価算定組織における検討結果のまとめ」は独立したセクションとして扱う
+
+禁止事項：
 - ファイル名やファイルパスは一切出力しない
 - コードブロック記号（\`\`\`markdown等）は使用しない
-- マークダウンコンテンツのみを出力する
-- 同じ内容の表が複数回出現する場合は、最も構造化された形式のものを1回だけ出力する
+- 構造化データに存在しない表や内容を追加しない
+- 同じタイトル（例：「新医薬品一覧表」）を持つセクションを複数回出力しない
 
 構造化データ：
 ${JSON.stringify(data, null, 2)}
@@ -717,7 +753,7 @@ async function processLargeDocument(
         {
           role: "system",
           content:
-            "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。元の文書の構造と内容を忠実に再現してください。ファイル名やコードブロック記号は一切出力せず、純粋なマークダウンコンテンツのみを出力してください。",
+            "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。極めて重要：与えられた構造化データに含まれる内容のみを出力し、データに存在しない要素は一切追加しないでください。各ページの内容は1回だけ出力し、同じ表や内容を複数回出力しないでください。階層構造は必ず指示に従ってください（#: 主要タイトル、##: 大セクション、###: 整理番号、####: サブセクション、#####: 詳細項目）。ファイル名やコードブロック記号は使用せず、純粋なマークダウンコンテンツのみを出力してください。",
         },
         {
           role: "user",
@@ -745,6 +781,32 @@ function cleanupMarkdownOutput(content: string): string {
   // コードブロック記号を削除
   cleaned = cleaned.replace(/^```markdown\s*$/gm, '');
   cleaned = cleaned.replace(/^```\s*$/gm, '');
+  
+  // 重複した「新医薬品一覧表」セクションを削除（最初のものだけ残す）
+  // 最初の出現位置を特定
+  const firstTableMatch = cleaned.match(/^# 新医薬品一覧表.*$/m);
+  if (firstTableMatch) {
+    const firstTableIndex = cleaned.indexOf(firstTableMatch[0]);
+    const beforeFirstTable = cleaned.substring(0, firstTableIndex + firstTableMatch[0].length);
+    let afterFirstTable = cleaned.substring(firstTableIndex + firstTableMatch[0].length);
+    
+    // 2回目以降の「新医薬品一覧表」セクション全体を削除
+    // セクションは次の「#」レベルの見出しまたは「---」まで続く
+    afterFirstTable = afterFirstTable.replace(
+      /\n# 新医薬品一覧表[\s\S]*?(?=\n#{1,3}\s|^---$|\n## 新医薬品の薬価算定について|$)/gm,
+      ''
+    );
+    
+    cleaned = beforeFirstTable + afterFirstTable;
+  }
+  
+  // 整理番号の前に現れる不要な表を検出して削除
+  // パターン: 表の後に整理番号が続く場合
+  cleaned = cleaned.replace(/(\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*)\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm, '\n\n$2');
+  
+  // 整理番号の前に現れる薬効分類の表を削除
+  // パターン: | 薬効分類 | 成分名 | ... で始まる表
+  cleaned = cleaned.replace(/\n\|[\s]*薬効分類[\s]*\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm, '\n\n$2');
   
   // 連続する改行を正規化（3つ以上の改行を2つに）
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
@@ -793,7 +855,7 @@ async function convertToMarkdownWithOpenAI(
           {
             role: "system",
             content:
-              "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。元の文書の構造と内容を忠実に再現してください。ファイル名やコードブロック記号は一切出力せず、純粋なマークダウンコンテンツのみを出力してください。",
+              "あなたは日本語文書のOCR結果を正確なマークダウンに変換する専門家です。極めて重要：与えられた構造化データに含まれる内容のみを出力し、データに存在しない要素は一切追加しないでください。各ページの内容は1回だけ出力し、同じ表や内容を複数回出力しないでください。ファイル名やコードブロック記号は使用せず、純粋なマークダウンコンテンツのみを出力してください。",
           },
           {
             role: "user",
@@ -871,6 +933,18 @@ async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
   // 構造化データの抽出
   const structuredData = processDocumentAiResponse(response);
   console.log("構造化データの抽出が完了しました。");
+  
+  // デバッグ情報を出力
+  if (Deno.env.get("DEBUG")) {
+    console.log(`総ページ数: ${structuredData.pages.length}`);
+    structuredData.pages.forEach((page, index) => {
+      console.log(`ページ ${page.pageNumber}: ${page.elements.length} 要素`);
+      const tableCount = page.elements.filter(e => e.type === "table").length;
+      if (tableCount > 0) {
+        console.log(`  - テーブル: ${tableCount}`);
+      }
+    });
+  }
 
   return structuredData;
 }
