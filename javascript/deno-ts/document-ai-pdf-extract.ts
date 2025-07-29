@@ -420,18 +420,19 @@ function isTableDuplicate(
   // ヘッダーの比較
   if (table1.headers.length !== table2.headers.length) return false;
   for (let i = 0; i < table1.headers.length; i++) {
-    if (table1.headers[i].join('|') !== table2.headers[i].join('|')) return false;
+    if (table1.headers[i].join("|") !== table2.headers[i].join("|"))
+      return false;
   }
-  
+
   // 行数が大きく異なる場合は別のテーブルと判断
   if (Math.abs(table1.rows.length - table2.rows.length) > 2) return false;
-  
+
   // 最初の数行を比較して同じかチェック
   const compareRows = Math.min(3, table1.rows.length, table2.rows.length);
   for (let i = 0; i < compareRows; i++) {
-    if (table1.rows[i].join('|') !== table2.rows[i].join('|')) return false;
+    if (table1.rows[i].join("|") !== table2.rows[i].join("|")) return false;
   }
-  
+
   return true;
 }
 
@@ -519,7 +520,7 @@ function processDocumentAiResponse(
           const tableData = extractTableData(fullText, table);
 
           // 重複チェック
-          const isDuplicate = processedTables.some(processed => 
+          const isDuplicate = processedTables.some((processed) =>
             isTableDuplicate(processed, tableData)
           );
 
@@ -577,9 +578,11 @@ function processDocumentAiResponse(
  */
 function isSummaryTableContinuationRow(row: string[]): boolean {
   // 最初のセルが空で、2番目以降にデータがある場合は継続行
-  return row.length > 1 && 
-         (!row[0] || row[0].trim() === '') && 
-         row.some((cell, index) => index > 0 && cell && cell.trim() !== '');
+  return (
+    row.length > 1 &&
+    (!row[0] || row[0].trim() === "") &&
+    row.some((cell, index) => index > 0 && cell && cell.trim() !== "")
+  );
 }
 
 /**
@@ -776,44 +779,55 @@ async function processLargeDocument(
  */
 function cleanupMarkdownOutput(content: string): string {
   // ファイル名参照を削除（例: @javascript/000928313.md）
-  let cleaned = content.replace(/^@[^\s]+\s*/gm, '');
-  
+  let cleaned = content.replace(/^@[^\s]+\s*/gm, "");
+
   // コードブロック記号を削除
-  cleaned = cleaned.replace(/^```markdown\s*$/gm, '');
-  cleaned = cleaned.replace(/^```\s*$/gm, '');
-  
+  cleaned = cleaned.replace(/^```markdown\s*$/gm, "");
+  cleaned = cleaned.replace(/^```\s*$/gm, "");
+
   // 重複した「新医薬品一覧表」セクションを削除（最初のものだけ残す）
   // 最初の出現位置を特定
   const firstTableMatch = cleaned.match(/^# 新医薬品一覧表.*$/m);
   if (firstTableMatch) {
     const firstTableIndex = cleaned.indexOf(firstTableMatch[0]);
-    const beforeFirstTable = cleaned.substring(0, firstTableIndex + firstTableMatch[0].length);
-    let afterFirstTable = cleaned.substring(firstTableIndex + firstTableMatch[0].length);
-    
+    const beforeFirstTable = cleaned.substring(
+      0,
+      firstTableIndex + firstTableMatch[0].length
+    );
+    let afterFirstTable = cleaned.substring(
+      firstTableIndex + firstTableMatch[0].length
+    );
+
     // 2回目以降の「新医薬品一覧表」セクション全体を削除
     // セクションは次の「#」レベルの見出しまたは「---」まで続く
     afterFirstTable = afterFirstTable.replace(
       /\n# 新医薬品一覧表[\s\S]*?(?=\n#{1,3}\s|^---$|\n## 新医薬品の薬価算定について|$)/gm,
-      ''
+      ""
     );
-    
+
     cleaned = beforeFirstTable + afterFirstTable;
   }
-  
+
   // 整理番号の前に現れる不要な表を検出して削除
   // パターン: 表の後に整理番号が続く場合
-  cleaned = cleaned.replace(/(\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*)\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm, '\n\n$2');
-  
+  cleaned = cleaned.replace(
+    /(\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*)\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm,
+    "\n\n$2"
+  );
+
   // 整理番号の前に現れる薬効分類の表を削除
   // パターン: | 薬効分類 | 成分名 | ... で始まる表
-  cleaned = cleaned.replace(/\n\|[\s]*薬効分類[\s]*\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm, '\n\n$2');
-  
+  cleaned = cleaned.replace(
+    /\n\|[\s]*薬効分類[\s]*\|[^\n]+\|\n\|[-\s|]+\|\n(?:\|[^\n]+\|\n)*\n+(整理番号\s+\d{2}-\d+-[内外注]-\d+)/gm,
+    "\n\n$2"
+  );
+
   // 連続する改行を正規化（3つ以上の改行を2つに）
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-  
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+
   // 先頭と末尾の空白を削除
   cleaned = cleaned.trim();
-  
+
   return cleaned;
 }
 
@@ -840,7 +854,7 @@ async function convertToMarkdownWithOpenAI(
 
   try {
     let rawContent: string;
-    
+
     // ドキュメントが大きい場合は分割処理
     if (data.pages.length > 10) {
       console.error("大きなドキュメントのため、分割処理を実行します。");
@@ -870,7 +884,7 @@ async function convertToMarkdownWithOpenAI(
       if (!content) {
         throw new Error("OpenAI APIからの応答が空です");
       }
-      
+
       rawContent = content;
     }
 
@@ -933,13 +947,13 @@ async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
   // 構造化データの抽出
   const structuredData = processDocumentAiResponse(response);
   console.log("構造化データの抽出が完了しました。");
-  
+
   // デバッグ情報を出力
   if (Deno.env.get("DEBUG")) {
     console.log(`総ページ数: ${structuredData.pages.length}`);
     structuredData.pages.forEach((page, index) => {
       console.log(`ページ ${page.pageNumber}: ${page.elements.length} 要素`);
-      const tableCount = page.elements.filter(e => e.type === "table").length;
+      const tableCount = page.elements.filter((e) => e.type === "table").length;
       if (tableCount > 0) {
         console.log(`  - テーブル: ${tableCount}`);
       }
@@ -954,20 +968,20 @@ async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
  */
 function generateOutputFilename(pdfPath: string, extension: string): string {
   // パスの区切り文字を判定
-  const lastSlashIndex = pdfPath.lastIndexOf('/');
-  const lastBackslashIndex = pdfPath.lastIndexOf('\\');
+  const lastSlashIndex = pdfPath.lastIndexOf("/");
+  const lastBackslashIndex = pdfPath.lastIndexOf("\\");
   const separatorIndex = Math.max(lastSlashIndex, lastBackslashIndex);
-  
-  let dir = '';
+
+  let dir = "";
   let filename = pdfPath;
-  
+
   if (separatorIndex !== -1) {
     dir = pdfPath.substring(0, separatorIndex);
     filename = pdfPath.substring(separatorIndex + 1);
   }
-  
-  const nameWithoutExt = filename.replace(/\.pdf$/i, '');
-  
+
+  const nameWithoutExt = filename.replace(/\.pdf$/i, "");
+
   if (dir) {
     return `${dir}/${nameWithoutExt}.${extension}`;
   } else {
@@ -985,15 +999,19 @@ async function main(): Promise<void> {
 
     if (args.length === 0 || args.includes("--help")) {
       console.error(
-        "使用方法: ./document-ai-pdf-extract-gcloud.ts <PDFファイルパス> [オプション]"
+        "使用方法: ./document-ai-pdf-extract.ts <PDFファイルパス> [オプション]"
       );
       console.error("\nオプション:");
       console.error("  --json       JSON形式で保存（構造化データ）");
-      console.error("  --markdown   OpenAI APIを使用してマークダウンに変換して保存");
+      console.error(
+        "  --markdown   OpenAI APIを使用してマークダウンに変換して保存"
+      );
       console.error(
         "  --model      使用するOpenAIモデル（デフォルト: gpt-4o-mini）"
       );
-      console.error("  --output     出力ファイル名を指定（省略時は入力ファイル名を使用）");
+      console.error(
+        "  --output     出力ファイル名を指定（省略時は入力ファイル名を使用）"
+      );
       console.error("  --help       このヘルプを表示");
       console.error("\n環境変数:");
       console.error(
@@ -1009,24 +1027,20 @@ async function main(): Promise<void> {
       console.error("  3. Document AI API が有効化されている");
       console.error("\n使用例:");
       console.error("  # 構造化テキストをtxtファイルに保存");
-      console.error("  ./document-ai-pdf-extract-gcloud.ts input.pdf");
+      console.error("  ./document-ai-pdf-extract.ts input.pdf");
       console.error("  # → input.txt が生成される");
       console.error("");
       console.error("  # マークダウンに変換してmdファイルに保存");
-      console.error(
-        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --markdown"
-      );
+      console.error("  ./document-ai-pdf-extract.ts input.pdf --markdown");
       console.error("  # → input.md が生成される");
       console.error("");
       console.error("  # JSON形式でjsonファイルに保存");
-      console.error(
-        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --json"
-      );
+      console.error("  ./document-ai-pdf-extract.ts input.pdf --json");
       console.error("  # → input.json が生成される");
       console.error("");
       console.error("  # 出力ファイル名を指定");
       console.error(
-        "  ./document-ai-pdf-extract-gcloud.ts input.pdf --markdown --output output.md"
+        "  ./document-ai-pdf-extract.ts input.pdf --markdown --output output.md"
       );
       console.error("\n注意事項:");
       console.error("  - Imageless mode により最大30ページまで処理可能");
@@ -1069,7 +1083,7 @@ async function main(): Promise<void> {
     const outputIndex = args.indexOf("--output");
     let outputPath: string;
     let content: string;
-    
+
     // 出力形式の判定と内容の生成
     if (args.includes("--markdown")) {
       // マークダウン形式で保存
@@ -1082,9 +1096,10 @@ async function main(): Promise<void> {
             : "gpt-4o-mini";
 
         content = await convertToMarkdownWithOpenAI(structuredData, model);
-        outputPath = outputIndex !== -1 && args[outputIndex + 1]
-          ? args[outputIndex + 1]
-          : generateOutputFilename(pdfPath, "md");
+        outputPath =
+          outputIndex !== -1 && args[outputIndex + 1]
+            ? args[outputIndex + 1]
+            : generateOutputFilename(pdfPath, "md");
       } catch (error) {
         console.error("マークダウン変換エラー:", (error as Error).message);
         Deno.exit(1);
@@ -1092,28 +1107,32 @@ async function main(): Promise<void> {
     } else if (args.includes("--json")) {
       // JSON形式で保存
       content = JSON.stringify(structuredData, null, 2);
-      outputPath = outputIndex !== -1 && args[outputIndex + 1]
-        ? args[outputIndex + 1]
-        : generateOutputFilename(pdfPath, "json");
+      outputPath =
+        outputIndex !== -1 && args[outputIndex + 1]
+          ? args[outputIndex + 1]
+          : generateOutputFilename(pdfPath, "json");
     } else {
       // デフォルト：構造化テキスト形式で保存
       content = formatStructuredOutput(structuredData);
-      outputPath = outputIndex !== -1 && args[outputIndex + 1]
-        ? args[outputIndex + 1]
-        : generateOutputFilename(pdfPath, "txt");
+      outputPath =
+        outputIndex !== -1 && args[outputIndex + 1]
+          ? args[outputIndex + 1]
+          : generateOutputFilename(pdfPath, "txt");
     }
 
     // ファイルに保存
     try {
       await Deno.writeTextFile(outputPath, content);
       console.log(`結果を保存しました: ${outputPath}`);
-      
+
       // ファイルサイズを表示
       const fileInfo = await Deno.stat(outputPath);
       const fileSizeKB = (fileInfo.size / 1024).toFixed(2);
       console.log(`ファイルサイズ: ${fileSizeKB} KB`);
     } catch (error) {
-      console.error(`ファイルの保存に失敗しました: ${(error as Error).message}`);
+      console.error(
+        `ファイルの保存に失敗しました: ${(error as Error).message}`
+      );
       Deno.exit(1);
     }
   } catch (error) {

@@ -166,7 +166,7 @@ deno lint
 ## Document AI を使用したPDF文字起こしツール（gcloud CLI版）
 
 ### 概要
-`document-ai-pdf-extract-gcloud.ts` は、gcloud CLI を使用して認証を行い、Google Cloud Document AI でPDFファイルからテキストを抽出するTypeScriptスクリプトです。
+`document-ai-pdf-extract.ts` は、gcloud CLI を使用して認証を行い、Google Cloud Document AI でPDFファイルからテキストを抽出するTypeScriptスクリプトです。
 
 
 ### 事前準備
@@ -184,19 +184,19 @@ gcloud config set project YOUR_PROJECT_ID
 ### 使用方法
 ```bash
 # 実行（pdf-extractディレクトリの外にあるため、パスに注意）
-../../document-ai-pdf-extract-gcloud.ts <PDFファイルパス>
+../../document-ai-pdf-extract.ts <PDFファイルパス>
 
 # または Deno コマンドで実行
-deno run --allow-env --allow-read --allow-net --allow-run ../../document-ai-pdf-extract-gcloud.ts <PDFファイルパス>
+deno run --allow-env --allow-read --allow-net --allow-run ../../document-ai-pdf-extract.ts <PDFファイルパス>
 ```
 
 ### 例
 ```bash
 # PDFファイルからテキストを抽出
-DOCUMENT_AI_PROCESSOR_ID=d92387f0d5deee12 ../../document-ai-pdf-extract-gcloud.ts ./pdfs/sample.pdf
+DOCUMENT_AI_PROCESSOR_ID=<your-processor-id> ../../document-ai-pdf-extract.ts ./pdfs/sample.pdf
 
 # デバッグモードで実行
-DEBUG=1 DOCUMENT_AI_PROCESSOR_ID=d92387f0d5deee12 ../../document-ai-pdf-extract-gcloud.ts ./pdfs/sample.pdf
+DEBUG=1 DOCUMENT_AI_PROCESSOR_ID=<your-processor-id> ../../document-ai-pdf-extract.ts ./pdfs/sample.pdf
 ```
 
 ### 必要な環境変数
@@ -212,7 +212,7 @@ export GOOGLE_CLOUD_PROJECT="your-project-id"
 - gcloud CLI を使用したシンプルな認証
 - サービスアカウントキーの設定不要
 - Deno との互換性問題がない
-- 最も安定して動作
+- もっとも安定して動作
 - OpenAI APIと統合してPDFの内容を要約可能
 
 ### 注意事項
@@ -220,3 +220,13 @@ export GOOGLE_CLOUD_PROJECT="your-project-id"
 - プロセッサIDは Google Cloud Console の Document AI セクションで作成・取得できます
 - APIの使用量に応じて課金が発生する可能性があります
 - gcloud CLI がインストールされていない場合は、[gcloud CLI をインストール](https://cloud.google.com/sdk/docs/install)してください
+
+### 完全な実行コマンド例
+
+```bash
+OPENAI_API_KEY=<your-openai-api-key> \
+GOOGLE_CLOUD_PROJECT=<your-project-id> \
+DOCUMENT_AI_PROCESSOR_ID=<your-processor-id> \
+deno run --allow-env --allow-read --allow-net --allow-run --allow-write \
+../../document-ai-pdf-extract.ts <path-to-pdf-file> --markdown
+```
