@@ -24,6 +24,84 @@ interface DocumentAiResponse {
           }>;
         };
       };
+      paragraphs?: Array<{
+        layout?: {
+          textAnchor?: {
+            textSegments: Array<{
+              startIndex: string;
+              endIndex: string;
+            }>;
+          };
+        };
+      }>;
+      tables?: Array<{
+        layout?: {
+          textAnchor?: {
+            textSegments: Array<{
+              startIndex: string;
+              endIndex: string;
+            }>;
+          };
+        };
+        headerRows?: Array<{
+          cells: Array<{
+            layout?: {
+              textAnchor?: {
+                textSegments: Array<{
+                  startIndex: string;
+                  endIndex: string;
+                }>;
+              };
+            };
+          }>;
+        }>;
+        bodyRows?: Array<{
+          cells: Array<{
+            layout?: {
+              textAnchor?: {
+                textSegments: Array<{
+                  startIndex: string;
+                  endIndex: string;
+                }>;
+              };
+            };
+          }>;
+        }>;
+      }>;
+      lines?: Array<{
+        layout?: {
+          textAnchor?: {
+            textSegments: Array<{
+              startIndex: string;
+              endIndex: string;
+            }>;
+          };
+        };
+      }>;
+      blocks?: Array<{
+        layout?: {
+          textAnchor?: {
+            textSegments: Array<{
+              startIndex: string;
+              endIndex: string;
+            }>;
+          };
+        };
+      }>;
+    }>;
+    entities?: Array<{
+      type: string;
+      mentionText?: string;
+      textAnchor?: {
+        textSegments: Array<{
+          startIndex: string;
+          endIndex: string;
+        }>;
+      };
+      properties?: Array<{
+        type: string;
+        mentionText?: string;
+      }>;
     }>;
   };
   error?: {
@@ -31,6 +109,30 @@ interface DocumentAiResponse {
     message: string;
     details?: unknown[];
   };
+}
+
+// 構造化された出力のインターフェース
+interface StructuredOutput {
+  fullText: string;
+  pages: Array<{
+    pageNumber: number;
+    text: string;
+    elements: Array<{
+      type: 'paragraph' | 'table' | 'line' | 'block';
+      content: string;
+      metadata?: {
+        tableData?: {
+          headers: string[][];
+          rows: string[][];
+        };
+      };
+    }>;
+  }>;
+  entities?: Array<{
+    type: string;
+    text: string;
+    properties?: Record<string, string>;
+  }>;
 }
 
 // ===== 定数定義 =====
@@ -51,6 +153,31 @@ function encodeBase64(data: Uint8Array): string {
  */
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * テキストアンカーからテキストを抽出
+ */
+function extractTextFromAnchor(
+  fullText: string,
+  textAnchor?: {
+    textSegments: Array<{
+      startIndex: string;
+      endIndex: string;
+    }>;
+  }
+): string {
+  if (!textAnchor || !textAnchor.textSegments || textAnchor.textSegments.length === 0) {
+    return '';
+  }
+  
+  return textAnchor.textSegments
+    .map(segment => {
+      const start = parseInt(segment.startIndex, 10);
+      const end = parseInt(segment.endIndex, 10);
+      return fullText.substring(start, end);
+    })
+    .join('');
 }
 
 /**
@@ -233,28 +360,245 @@ async function makeDocumentAiRequest(params: {
 }
 
 /**
- * Document AI レスポンスからテキストを抽出
+ * テーブルデータを抽出
  */
-function processDocumentAiResponse(response: DocumentAiResponse): string {
+function extractTableData(
+  fullText: string,
+  table: any
+): { headers: string[][]; rows: string[][] } {
+  const headers: string[][] = [];
+  const rows: string[][] = [];
+  
+  // ヘッダー行の抽出
+  if (table.headerRows) {
+    table.headerRows.forEach((row: any) => {
+      const cells: string[] = [];
+      if (row.cells) {
+        row.cells.forEach((cell: any) => {
+          cells.push(extractTextFromAnchor(fullText, cell.layout?.textAnchor));
+        });
+      }
+      headers.push(cells);
+    });
+  }
+  
+  // ボディ行の抽出
+  if (table.bodyRows) {
+    table.bodyRows.forEach((row: any) => {
+      const cells: string[] = [];
+      if (row.cells) {
+        row.cells.forEach((cell: any) => {
+          cells.push(extractTextFromAnchor(fullText, cell.layout?.textAnchor));
+        });
+      }
+      rows.push(cells);
+    });
+  }
+  
+  return { headers, rows };
+}
+
+/**
+ * Document AI レスポンスから構造化されたデータを抽出
+ */
+function processDocumentAiResponse(response: DocumentAiResponse): StructuredOutput {
   if (response.error) {
     throw new Error(
       `Document AI 処理エラー: ${response.error.message} (コード: ${response.error.code})`
     );
   }
   
-  if (!response.document || !response.document.text) {
-    return '';
+  if (!response.document) {
+    return {
+      fullText: '',
+      pages: [],
+      entities: []
+    };
   }
   
-  return response.document.text;
+  const fullText = response.document.text || '';
+  const output: StructuredOutput = {
+    fullText,
+    pages: [],
+    entities: []
+  };
+  
+  // エンティティの抽出
+  if (response.document.entities) {
+    output.entities = response.document.entities.map(entity => ({
+      type: entity.type,
+      text: entity.mentionText || extractTextFromAnchor(fullText, entity.textAnchor),
+      properties: entity.properties?.reduce((acc, prop) => {
+        acc[prop.type] = prop.mentionText || '';
+        return acc;
+      }, {} as Record<string, string>)
+    }));
+  }
+  
+  // ページごとの構造化データの抽出
+  if (response.document.pages) {
+    response.document.pages.forEach((page, pageIndex) => {
+      const pageData = {
+        pageNumber: pageIndex + 1,
+        text: '',
+        elements: [] as any[]
+      };
+      
+      // ページテキストの抽出
+      if (page.layout?.textAnchor) {
+        pageData.text = extractTextFromAnchor(fullText, page.layout.textAnchor);
+      }
+      
+      // 段落の抽出
+      if (page.paragraphs) {
+        page.paragraphs.forEach(paragraph => {
+          const text = extractTextFromAnchor(fullText, paragraph.layout?.textAnchor);
+          if (text) {
+            pageData.elements.push({
+              type: 'paragraph',
+              content: text
+            });
+          }
+        });
+      }
+      
+      // テーブルの抽出
+      if (page.tables) {
+        page.tables.forEach(table => {
+          const tableText = extractTextFromAnchor(fullText, table.layout?.textAnchor);
+          const tableData = extractTableData(fullText, table);
+          
+          pageData.elements.push({
+            type: 'table',
+            content: tableText,
+            metadata: {
+              tableData
+            }
+          });
+        });
+      }
+      
+      // 行の抽出（段落がない場合のフォールバック）
+      if (!page.paragraphs && page.lines) {
+        page.lines.forEach(line => {
+          const text = extractTextFromAnchor(fullText, line.layout?.textAnchor);
+          if (text) {
+            pageData.elements.push({
+              type: 'line',
+              content: text
+            });
+          }
+        });
+      }
+      
+      // ブロックの抽出（段落も行もない場合のフォールバック）
+      if (!page.paragraphs && !page.lines && page.blocks) {
+        page.blocks.forEach(block => {
+          const text = extractTextFromAnchor(fullText, block.layout?.textAnchor);
+          if (text) {
+            pageData.elements.push({
+              type: 'block',
+              content: text
+            });
+          }
+        });
+      }
+      
+      output.pages.push(pageData);
+    });
+  }
+  
+  return output;
+}
+
+/**
+ * 構造化データをマークダウン変換用の形式で出力
+ */
+function formatStructuredOutput(data: StructuredOutput): string {
+  const output: string[] = [];
+  
+  // メタデータ
+  output.push('=== Document AI 構造化出力 ===');
+  output.push(`総ページ数: ${data.pages.length}`);
+  output.push(`エンティティ数: ${data.entities?.length || 0}`);
+  output.push('');
+  
+  // ページごとの構造化データ
+  data.pages.forEach(page => {
+    output.push(`\n--- ページ ${page.pageNumber} ---`);
+    
+    if (page.elements.length === 0) {
+      output.push('[構造要素が検出されませんでした]');
+    } else {
+      page.elements.forEach((element, index) => {
+        switch (element.type) {
+          case 'table':
+            output.push(`\n[表 ${index + 1}]`);
+            if (element.metadata?.tableData) {
+              const { headers, rows } = element.metadata.tableData;
+              
+              // ヘッダー
+              if (headers.length > 0) {
+                output.push('ヘッダー:');
+                headers.forEach(row => {
+                  output.push('  ' + row.join(' | '));
+                });
+              }
+              
+              // 行
+              if (rows.length > 0) {
+                output.push('データ:');
+                rows.forEach(row => {
+                  output.push('  ' + row.join(' | '));
+                });
+              }
+            } else {
+              output.push(element.content);
+            }
+            break;
+            
+          case 'paragraph':
+            output.push(`\n[段落 ${index + 1}]`);
+            output.push(element.content);
+            break;
+            
+          case 'line':
+            output.push(element.content);
+            break;
+            
+          case 'block':
+            output.push(`\n[ブロック ${index + 1}]`);
+            output.push(element.content);
+            break;
+        }
+      });
+    }
+  });
+  
+  // エンティティ
+  if (data.entities && data.entities.length > 0) {
+    output.push('\n\n=== 検出されたエンティティ ===');
+    data.entities.forEach(entity => {
+      output.push(`\n種類: ${entity.type}`);
+      output.push(`テキスト: ${entity.text}`);
+      if (entity.properties && Object.keys(entity.properties).length > 0) {
+        output.push('プロパティ:');
+        Object.entries(entity.properties).forEach(([key, value]) => {
+          output.push(`  ${key}: ${value}`);
+        });
+      }
+    });
+  }
+  
+  return output.join('\n');
 }
 
 // ===== メイン関数 =====
 
 /**
- * PDFファイルからテキストを抽出
+ * PDFファイルから構造化されたデータを抽出
  */
-async function extractTextFromPdf(pdfPath: string): Promise<string> {
+async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
   // 環境変数の確認
   const processorId = Deno.env.get("DOCUMENT_AI_PROCESSOR_ID");
   if (!processorId) {
@@ -288,11 +632,11 @@ async function extractTextFromPdf(pdfPath: string): Promise<string> {
     });
   });
   
-  // テキストの抽出
-  const extractedText = processDocumentAiResponse(response);
-  console.log('テキストの抽出が完了しました。');
+  // 構造化データの抽出
+  const structuredData = processDocumentAiResponse(response);
+  console.log('構造化データの抽出が完了しました。');
   
-  return extractedText;
+  return structuredData;
 }
 
 /**
@@ -303,16 +647,25 @@ async function main(): Promise<void> {
     // コマンドライン引数の処理
     const args = Deno.args;
     
-    if (args.length === 0) {
-      console.error('使用方法: ./document-ai-pdf-extract-gcloud.ts <PDFファイルパス>');
+    if (args.length === 0 || args.includes('--help')) {
+      console.error('使用方法: ./document-ai-pdf-extract-gcloud.ts <PDFファイルパス> [オプション]');
+      console.error('\nオプション:');
+      console.error('  --json    JSON形式で出力（OpenAI API連携用）');
+      console.error('  --help    このヘルプを表示');
+      console.error('\n環境変数:');
+      console.error('  DOCUMENT_AI_PROCESSOR_ID    Document AI プロセッサID（必須）');
+      console.error('  DEBUG                       デバッグ情報を表示');
       console.error('\n前提条件:');
       console.error('  1. gcloud CLI がインストールされている');
       console.error('  2. gcloud auth application-default login を実行済み');
-      console.error('  3. 環境変数 DOCUMENT_AI_PROCESSOR_ID が設定されている');
+      console.error('  3. Document AI API が有効化されている');
+      console.error('\n注意事項:');
+      console.error('  - Imageless mode により最大30ページまで処理可能');
+      console.error('  - 大きなPDFファイルは処理に時間がかかります');
       Deno.exit(1);
     }
     
-    const pdfPath = args[0];
+    const pdfPath = args.find(arg => !arg.startsWith('--')) || '';
     
     // ファイルの存在確認
     try {
@@ -336,12 +689,25 @@ async function main(): Promise<void> {
       Deno.exit(1);
     }
     
-    // テキスト抽出の実行
-    const extractedText = await extractTextFromPdf(pdfPath);
+    // 構造化データ抽出の実行
+    const structuredData = await extractTextFromPdf(pdfPath);
     
-    // 結果の出力
-    console.log('\n===== 抽出されたテキスト =====\n');
-    console.log(extractedText);
+    // 出力形式の判定
+    const outputFormat = args.includes('--json') ? 'json' : 'formatted';
+    
+    if (outputFormat === 'json') {
+      // JSON形式で出力（OpenAI API連携用）
+      console.log(JSON.stringify(structuredData, null, 2));
+    } else {
+      // フォーマット済みテキストで出力
+      console.log('\n' + formatStructuredOutput(structuredData));
+      
+      // デバッグモードの場合は元のテキストも出力
+      if (Deno.env.get("DEBUG")) {
+        console.log('\n\n=== 元のテキスト（全文） ===\n');
+        console.log(structuredData.fullText);
+      }
+    }
     
   } catch (error) {
     console.error('エラーが発生しました:', (error as Error).message);
