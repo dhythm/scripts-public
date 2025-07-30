@@ -16,7 +16,8 @@ interface DocumentAiRequest {
 
 interface DocumentAiResponse {
   document?: {
-    text: string;
+    text?: string;
+    // Document OCR形式 (従来形式)
     pages?: Array<{
       pageNumber: number;
       layout?: {
@@ -92,6 +93,57 @@ interface DocumentAiResponse {
         };
       }>;
     }>;
+    // Layout Parser形式 (新形式)
+    documentLayout?: {
+      blocks: Array<{
+        blockId: string;
+        pageSpan?: {
+          pageStart: number;
+          pageEnd: number;
+        };
+        textBlock?: {
+          text?: string;
+          type?: string;
+        };
+        tableBlock?: {
+          headerRows?: Array<{
+            cells: Array<{
+              blocks: Array<{
+                blockId: string;
+                textBlock?: {
+                  text?: string;
+                  type?: string;
+                };
+                pageSpan?: {
+                  pageStart: number;
+                  pageEnd: number;
+                };
+              }>;
+              rowSpan?: number;
+              colSpan?: number;
+            }>;
+          }>;
+          bodyRows?: Array<{
+            cells: Array<{
+              blocks: Array<{
+                blockId: string;
+                textBlock?: {
+                  text?: string;
+                  type?: string;
+                };
+                pageSpan?: {
+                  pageStart: number;
+                  pageEnd: number;
+                };
+              }>;
+              rowSpan?: number;
+              colSpan?: number;
+            }>;
+          }>;
+          caption?: string;
+        };
+      }>;
+    };
     entities?: Array<{
       type: string;
       mentionText?: string;
@@ -456,6 +508,45 @@ function processDocumentAiResponse(
     };
   }
 
+  // 形式を判定して適切な処理関数を呼び出す
+  if (response.document.documentLayout) {
+    console.log("Layout Parser形式を検出しました。");
+    return processLayoutParserResponse(response);
+  } else if (response.document.pages) {
+    console.log("Document OCR形式を検出しました。");
+    return processDocumentOcrResponse(response);
+  } else {
+    console.warn("不明なDocument AI形式です。基本的な処理を行います。");
+    // 基本的な処理（テキストとエンティティのみ）
+    return {
+      fullText: response.document.text || "",
+      pages: [],
+      entities: response.document.entities?.map((entity) => ({
+        type: entity.type,
+        text: entity.mentionText || "",
+        properties: entity.properties?.reduce((acc, prop) => {
+          acc[prop.type] = prop.mentionText || "";
+          return acc;
+        }, {} as Record<string, string>),
+      })) || [],
+    };
+  }
+}
+
+/**
+ * Document OCR形式（従来形式）のレスポンスを処理
+ */
+function processDocumentOcrResponse(
+  response: DocumentAiResponse
+): StructuredOutput {
+  if (!response.document) {
+    return {
+      fullText: "",
+      pages: [],
+      entities: [],
+    };
+  }
+
   const fullText = response.document.text || "";
   const output: StructuredOutput = {
     fullText,
@@ -574,15 +665,166 @@ function processDocumentAiResponse(
 }
 
 /**
- * 総括表の医薬品番号を持つ行を検出するヘルパー関数
+ * Layout Parser形式のテーブルセルからテキストを抽出
  */
-function isSummaryTableContinuationRow(row: string[]): boolean {
-  // 最初のセルが空で、2番目以降にデータがある場合は継続行
-  return (
-    row.length > 1 &&
-    (!row[0] || row[0].trim() === "") &&
-    row.some((cell, index) => index > 0 && cell && cell.trim() !== "")
-  );
+function extractTextFromLayoutTableCell(
+  cell: any
+): string {
+  if (!cell.blocks || cell.blocks.length === 0) {
+    return "";
+  }
+  
+  return cell.blocks
+    .map((block: any) => {
+      if (block.textBlock && block.textBlock.text) {
+        return block.textBlock.text;
+      }
+      return "";
+    })
+    .filter((text: string) => text)
+    .join(" ");
+}
+
+/**
+ * Layout Parser形式のテーブルを処理
+ */
+function processLayoutTableBlock(
+  tableBlock: any
+): { headers: string[][]; rows: string[][] } {
+  const headers: string[][] = [];
+  const rows: string[][] = [];
+
+  // ヘッダー行の処理
+  if (tableBlock.headerRows) {
+    tableBlock.headerRows.forEach((row: any) => {
+      const headerRow: string[] = [];
+      if (row.cells) {
+        row.cells.forEach((cell: any) => {
+          headerRow.push(extractTextFromLayoutTableCell(cell));
+        });
+      }
+      headers.push(headerRow);
+    });
+  }
+
+  // ボディ行の処理
+  if (tableBlock.bodyRows) {
+    tableBlock.bodyRows.forEach((row: any) => {
+      const bodyRow: string[] = [];
+      if (row.cells) {
+        row.cells.forEach((cell: any) => {
+          bodyRow.push(extractTextFromLayoutTableCell(cell));
+        });
+      }
+      rows.push(bodyRow);
+    });
+  }
+
+  return { headers, rows };
+}
+
+/**
+ * Layout Parser形式のレスポンスを処理
+ */
+function processLayoutParserResponse(
+  response: DocumentAiResponse
+): StructuredOutput {
+  if (!response.document || !response.document.documentLayout) {
+    return {
+      fullText: "",
+      pages: [],
+      entities: [],
+    };
+  }
+
+  const output: StructuredOutput = {
+    fullText: "",
+    pages: [],
+    entities: [],
+  };
+
+  // ページごとのブロックを収集
+  const pageBlocks: Map<number, any[]> = new Map();
+  
+  response.document.documentLayout.blocks.forEach((block) => {
+    const pageNum = block.pageSpan?.pageStart || 1;
+    if (!pageBlocks.has(pageNum)) {
+      pageBlocks.set(pageNum, []);
+    }
+    pageBlocks.get(pageNum)!.push(block);
+  });
+
+  // 全テキストを収集（ページ順）
+  const allTexts: string[] = [];
+  
+  // ページごとに処理
+  const sortedPageNumbers = Array.from(pageBlocks.keys()).sort((a, b) => a - b);
+  
+  sortedPageNumbers.forEach((pageNum) => {
+    const blocks = pageBlocks.get(pageNum) || [];
+    const pageData = {
+      pageNumber: pageNum,
+      text: "",
+      elements: [] as any[],
+    };
+
+    const pageTexts: string[] = [];
+
+    blocks.forEach((block) => {
+      if (block.textBlock) {
+        const text = block.textBlock.text || "";
+        if (text) {
+          pageTexts.push(text);
+          allTexts.push(text);
+          
+          pageData.elements.push({
+            type: block.textBlock.type === "paragraph" ? "paragraph" : "block",
+            content: text,
+          });
+        }
+      } else if (block.tableBlock) {
+        const tableData = processLayoutTableBlock(block.tableBlock);
+        
+        // テーブルのテキスト表現を生成
+        const tableText = [
+          ...tableData.headers.map(row => row.join(" | ")),
+          ...tableData.rows.map(row => row.join(" | "))
+        ].join("\n");
+        
+        if (tableText) {
+          pageTexts.push(tableText);
+          allTexts.push(tableText);
+        }
+        
+        pageData.elements.push({
+          type: "table",
+          content: tableText,
+          metadata: {
+            tableData,
+          },
+        });
+      }
+    });
+
+    pageData.text = pageTexts.join("\n");
+    output.pages.push(pageData);
+  });
+
+  output.fullText = allTexts.join("\n");
+
+  // エンティティの処理（もし存在する場合）
+  if (response.document.entities) {
+    output.entities = response.document.entities.map((entity) => ({
+      type: entity.type,
+      text: entity.mentionText || "",
+      properties: entity.properties?.reduce((acc, prop) => {
+        acc[prop.type] = prop.mentionText || "";
+        return acc;
+      }, {} as Record<string, string>),
+    }));
+  }
+
+  return output;
 }
 
 /**
@@ -910,7 +1152,10 @@ async function convertToMarkdownWithOpenAI(
 /**
  * PDFファイルから構造化されたデータを抽出
  */
-async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
+async function extractTextFromPdf(pdfPath: string): Promise<{
+  structuredData: StructuredOutput;
+  rawResponse?: DocumentAiResponse;
+}> {
   // 環境変数の確認
   const processorId = Deno.env.get("DOCUMENT_AI_PROCESSOR_ID");
   if (!processorId) {
@@ -951,16 +1196,36 @@ async function extractTextFromPdf(pdfPath: string): Promise<StructuredOutput> {
   // デバッグ情報を出力
   if (Deno.env.get("DEBUG")) {
     console.log(`総ページ数: ${structuredData.pages.length}`);
-    structuredData.pages.forEach((page, index) => {
+    console.log(`総テキスト長: ${structuredData.fullText.length} 文字`);
+    
+    structuredData.pages.forEach((page) => {
       console.log(`ページ ${page.pageNumber}: ${page.elements.length} 要素`);
-      const tableCount = page.elements.filter((e) => e.type === "table").length;
-      if (tableCount > 0) {
-        console.log(`  - テーブル: ${tableCount}`);
-      }
+      const elementTypes = page.elements.reduce((acc, elem) => {
+        acc[elem.type] = (acc[elem.type] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      
+      Object.entries(elementTypes).forEach(([type, count]) => {
+        console.log(`  - ${type}: ${count}`);
+      });
     });
+    
+    if (structuredData.entities && structuredData.entities.length > 0) {
+      console.log(`エンティティ数: ${structuredData.entities.length}`);
+    }
+    
+    // 生のレスポンスの形式も出力
+    if (response.document?.documentLayout) {
+      console.log(`Layout Parserブロック数: ${response.document.documentLayout.blocks.length}`);
+    } else if (response.document?.pages) {
+      console.log(`Document OCRページ数: ${response.document.pages.length}`);
+    }
   }
 
-  return structuredData;
+  return {
+    structuredData,
+    rawResponse: response,
+  };
 }
 
 /**
@@ -1003,6 +1268,7 @@ async function main(): Promise<void> {
       );
       console.error("\nオプション:");
       console.error("  --json       JSON形式で保存（構造化データ）");
+      console.error("  --raw        Document AI OCR結果をそのまま保存（生データ）");
       console.error(
         "  --markdown   OpenAI APIを使用してマークダウンに変換して保存"
       );
@@ -1037,6 +1303,10 @@ async function main(): Promise<void> {
       console.error("  # JSON形式でjsonファイルに保存");
       console.error("  ./document-ai-pdf-extract.ts input.pdf --json");
       console.error("  # → input.json が生成される");
+      console.error("");
+      console.error("  # Document AI OCR結果をそのまま保存");
+      console.error("  ./document-ai-pdf-extract.ts input.pdf --raw");
+      console.error("  # → input.raw.json が生成される");
       console.error("");
       console.error("  # 出力ファイル名を指定");
       console.error(
@@ -1077,7 +1347,7 @@ async function main(): Promise<void> {
     }
 
     // 構造化データ抽出の実行
-    const structuredData = await extractTextFromPdf(pdfPath);
+    const { structuredData, rawResponse } = await extractTextFromPdf(pdfPath);
 
     // 出力ファイル名の決定
     const outputIndex = args.indexOf("--output");
@@ -1085,7 +1355,14 @@ async function main(): Promise<void> {
     let content: string;
 
     // 出力形式の判定と内容の生成
-    if (args.includes("--markdown")) {
+    if (args.includes("--raw")) {
+      // Document AI の生のレスポンスを保存
+      content = JSON.stringify(rawResponse, null, 2);
+      outputPath =
+        outputIndex !== -1 && args[outputIndex + 1]
+          ? args[outputIndex + 1]
+          : generateOutputFilename(pdfPath, "raw.json");
+    } else if (args.includes("--markdown")) {
       // マークダウン形式で保存
       try {
         // モデルの取得
