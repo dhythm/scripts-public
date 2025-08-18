@@ -85,6 +85,99 @@ export function findCommonAvailableSlots(
   );
 }
 
+export function findRawAvailableSlots(
+  availabilityResults: { busySlots: TimeSlot[] }[],
+  start: Date,
+  end: Date,
+  businessHoursOnly = false
+): TimeSlot[] {
+  // 全ての忙しい時間を統合
+  const allBusySlots: TimeSlot[] = [];
+  for (const result of availabilityResults) {
+    allBusySlots.push(...result.busySlots);
+  }
+  
+  // 忙しい時間をマージして重複を除去
+  const mergedBusy = mergeTimeSlots(allBusySlots);
+  
+  // 忙しい時間がない場合、全時間が空き
+  if (mergedBusy.length === 0) {
+    if (businessHoursOnly) {
+      return splitByBusinessHours([{ start, end }]);
+    }
+    return [{ start, end }];
+  }
+  
+  // 空き時間を計算
+  const availableSlots: TimeSlot[] = [];
+  let currentStart = new Date(start);
+  
+  for (const busy of mergedBusy) {
+    if (currentStart < busy.start) {
+      availableSlots.push({
+        start: new Date(currentStart),
+        end: new Date(busy.start),
+      });
+    }
+    currentStart = new Date(Math.max(currentStart.getTime(), busy.end.getTime()));
+  }
+  
+  // 最後の忙しい時間から終了時刻までの空き時間
+  if (currentStart < end) {
+    availableSlots.push({
+      start: new Date(currentStart),
+      end: new Date(end),
+    });
+  }
+  
+  // 営業時間でフィルタリング（必要な場合）
+  if (businessHoursOnly) {
+    return splitByBusinessHours(availableSlots);
+  }
+  
+  return availableSlots;
+}
+
+function splitByBusinessHours(slots: TimeSlot[]): TimeSlot[] {
+  const result: TimeSlot[] = [];
+  
+  for (const slot of slots) {
+    let current = new Date(slot.start);
+    
+    while (current < slot.end) {
+      const dayStart = new Date(current);
+      dayStart.setHours(9, 0, 0, 0);
+      const dayEnd = new Date(current);
+      dayEnd.setHours(18, 0, 0, 0);
+      
+      // 週末をスキップ
+      if (current.getDay() === 0 || current.getDay() === 6) {
+        current = new Date(current);
+        current.setDate(current.getDate() + 1);
+        current.setHours(9, 0, 0, 0);
+        continue;
+      }
+      
+      const slotStart = new Date(Math.max(current.getTime(), dayStart.getTime(), slot.start.getTime()));
+      const slotEnd = new Date(Math.min(dayEnd.getTime(), slot.end.getTime()));
+      
+      if (slotStart < slotEnd) {
+        result.push({
+          start: slotStart,
+          end: slotEnd,
+        });
+      }
+      
+      // 次の日の9時に移動
+      current = new Date(current);
+      current.setDate(current.getDate() + 1);
+      current.setHours(9, 0, 0, 0);
+    }
+  }
+  
+  return result;
+}
+
 export function mergeTimeSlots(slots: TimeSlot[]): TimeSlot[] {
   if (slots.length === 0) return [];
   

@@ -12,6 +12,9 @@ export function parseCliArgs(args: string[]): CliOptions {
     outputFormat: "text",
     useOpenAI: false,
     verbose: false,
+    showAll: false,
+    limit: undefined,
+    rawSlots: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -81,6 +84,23 @@ export function parseCliArgs(args: string[]): CliOptions {
       case "--verbose":
       case "-v":
         options.verbose = true;
+        break;
+
+      case "--show-all":
+        options.showAll = true;
+        break;
+
+      case "--limit":
+        if (i + 1 < args.length) {
+          options.limit = parseInt(args[++i], 10);
+          if (options.limit <= 0) {
+            throw new Error("--limit は1以上の数値を指定してください");
+          }
+        }
+        break;
+
+      case "--raw-slots":
+        options.rawSlots = true;
         break;
 
       case "--help":
@@ -193,6 +213,9 @@ function printHelp(): void {
   --timezone <tz>            タイムゾーン（デフォルト: Asia/Tokyo）
   -f, --format <形式>        出力形式 (text/json/markdown、デフォルト: text)
   --openai                   OpenAI APIを使用して最適化
+  --show-all                 全ての空き時間候補を表示
+  --limit <数>               表示する候補数の上限（デフォルト: 5）
+  --raw-slots                連続した空き時間ブロックを表示（例: 10:00-15:00）
   -v, --verbose              詳細ログを表示
   -h, --help                 このヘルプを表示
 
@@ -215,6 +238,15 @@ function printHelp(): void {
 
   # OpenAI APIを使用して最適な時間を提案
   ./app.ts -p "佐藤:sato@example.com" --openai -d 90
+
+  # 全ての空き時間を表示
+  ./app.ts -p "田中:tanaka@example.com:google" --show-all
+
+  # 上位10件のみ表示
+  ./app.ts -p "山田:yamada@example.com:google" --limit 10
+
+  # 連続した空き時間ブロックを表示
+  ./app.ts -p "佐藤:sato@example.com:google" --raw-slots
 
 参加者CSVファイル形式:
   # コメント行

@@ -39,7 +39,7 @@ export class GoogleAuth {
     this.accessToken = data.access_token;
     this.tokenExpiry = new Date(Date.now() + (data.expires_in - 60) * 1000);
 
-    return this.accessToken;
+    return this.accessToken!;
   }
 
   static fromEnv(): GoogleAuth {

@@ -40,6 +40,9 @@ export interface CliOptions {
   outputFormat: "json" | "markdown" | "text";
   useOpenAI: boolean;
   verbose: boolean;
+  showAll: boolean; // 全ての候補を表示
+  limit?: number; // 表示する候補数の上限
+  rawSlots: boolean; // 連続した空き時間ブロックを表示
 }
 
 export interface GoogleCalendarConfig {
