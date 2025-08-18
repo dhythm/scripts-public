@@ -61,6 +61,12 @@ export class GoogleCalendarClient {
       items: calendarIds.map(id => ({ id })),
     };
 
+    if (Deno.env.get("DEBUG") === "true") {
+      console.log("\n📅 Google Calendar FreeBusy API リクエスト:");
+      console.log(`  期間: ${timeMin.toISOString()} - ${timeMax.toISOString()}`);
+      console.log(`  カレンダー: ${calendarIds.join(", ")}`);
+    }
+
     const response = await fetch(
       `${this.baseUrl}/freeBusy`,
       {
@@ -79,6 +85,12 @@ export class GoogleCalendarClient {
     }
 
     const data = await response.json();
+    
+    if (Deno.env.get("DEBUG") === "true") {
+      console.log("\n📅 Google Calendar FreeBusy API レスポンス:");
+      console.log(JSON.stringify(data, null, 2));
+    }
+    
     const result = new Map<string, TimeSlot[]>();
 
     for (const [calendarId, calendar] of Object.entries(data.calendars || {})) {
@@ -87,6 +99,17 @@ export class GoogleCalendarClient {
         end: new Date(busy.end),
       }));
       result.set(calendarId, busySlots);
+      
+      if (Deno.env.get("DEBUG") === "true") {
+        console.log(`\n  ${calendarId}:`);
+        if (busySlots.length === 0) {
+          console.log("    予定なし");
+        } else {
+          busySlots.forEach((slot: TimeSlot) => {
+            console.log(`    - ${slot.start.toISOString()} ~ ${slot.end.toISOString()}`);
+          });
+        }
+      }
     }
 
     return result;

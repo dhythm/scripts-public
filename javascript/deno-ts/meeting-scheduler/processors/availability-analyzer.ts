@@ -1,15 +1,14 @@
 import OpenAI from "npm:openai@4.28.0";
-import { 
-  TimeSlot, 
-  Person, 
-  AvailabilityResult, 
+import {
+  AvailabilityResult,
   MeetingCandidate,
-  OpenAIConfig 
+  OpenAIConfig,
+  Person,
+  TimeSlot,
 } from "../types/index.ts";
-import { 
-  findCommonAvailableSlots, 
+import {
+  findCommonAvailableSlots,
   formatDateTime,
-  mergeTimeSlots 
 } from "../utils/date-utils.ts";
 
 export class AvailabilityAnalyzer {
@@ -55,19 +54,20 @@ export class AvailabilityAnalyzer {
 
     try {
       const response = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-5-mini",
         messages: [
           {
             role: "system",
-            content: "あなたは会議スケジュール最適化の専門家です。参加者全員にとって最適な会議時間を提案してください。"
+            content:
+              "あなたは会議スケジュール最適化の専門家です。参加者全員にとって最適な会議時間を提案してください。",
           },
           {
             role: "user",
-            content: prompt
-          }
+            content: prompt,
+          },
         ],
         temperature: 0.3,
-        response_format: { type: "json_object" }
+        response_format: { type: "json_object" },
       });
 
       const content = response.choices[0]?.message?.content;
@@ -77,7 +77,6 @@ export class AvailabilityAnalyzer {
 
       const result = JSON.parse(content);
       return this.parseOpenAIResponse(result, availableSlots);
-
     } catch (error) {
       console.error("OpenAI API エラー:", error);
       return this.simpleScoring(availableSlots);
@@ -93,15 +92,19 @@ export class AvailabilityAnalyzer {
       index,
       start: formatDateTime(slot.start),
       end: formatDateTime(slot.end),
-      dayOfWeek: ["日", "月", "火", "水", "木", "金", "土"][slot.start.getDay()],
-      hour: slot.start.getHours()
+      dayOfWeek: ["日", "月", "火", "水", "木", "金", "土"][
+        slot.start.getDay()
+      ],
+      hour: slot.start.getHours(),
     }));
 
     return `
-以下の空き時間から、${participants.length}人の参加者にとって最適な会議時間を5つ選んでください。
+以下の空き時間から、${
+      participants.length
+    }人の参加者にとって最適な会議時間を5つ選んでください。
 
 参加者:
-${participants.map(p => `- ${p.name} (${p.email})`).join("\n")}
+${participants.map((p) => `- ${p.name} (${p.email})`).join("\n")}
 
 利用可能な時間帯:
 ${JSON.stringify(slotsInfo, null, 2)}
@@ -139,7 +142,7 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
           candidates.push({
             slot: availableSlots[rec.index],
             score: rec.score || 50,
-            reasons: rec.reasons || []
+            reasons: rec.reasons || [],
           });
         }
       }
@@ -147,11 +150,14 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
 
     // 候補が少ない場合は追加
     if (candidates.length < 5) {
-      const additionalCandidates = this.simpleScoring(availableSlots)
-        .filter(c => !candidates.some(existing => 
-          existing.slot.start.getTime() === c.slot.start.getTime()
-        ));
-      
+      const additionalCandidates = this.simpleScoring(availableSlots).filter(
+        (c) =>
+          !candidates.some(
+            (existing) =>
+              existing.slot.start.getTime() === c.slot.start.getTime()
+          )
+      );
+
       candidates.push(...additionalCandidates.slice(0, 5 - candidates.length));
     }
 
@@ -159,52 +165,55 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
   }
 
   private simpleScoring(slots: TimeSlot[]): MeetingCandidate[] {
-    return slots.map(slot => {
-      let score = 50;
-      const reasons: string[] = [];
-      const hour = slot.start.getHours();
-      const day = slot.start.getDay();
+    return slots
+      .map((slot) => {
+        let score = 50;
+        const reasons: string[] = [];
+        const hour = slot.start.getHours();
+        const day = slot.start.getDay();
 
-      // 業務時間内
-      if (hour >= 9 && hour < 18) {
-        score += 20;
-        reasons.push("業務時間内");
-      }
+        // 業務時間内
+        if (hour >= 9 && hour < 18) {
+          score += 20;
+          reasons.push("業務時間内");
+        }
 
-      // 午前中のゴールデンタイム
-      if (hour >= 10 && hour < 12) {
-        score += 15;
-        reasons.push("午前中の集中しやすい時間");
-      }
+        // 午前中のゴールデンタイム
+        if (hour >= 10 && hour < 12) {
+          score += 15;
+          reasons.push("午前中の集中しやすい時間");
+        }
 
-      // 午後の良い時間
-      if (hour >= 14 && hour < 16) {
-        score += 10;
-        reasons.push("午後の生産的な時間");
-      }
+        // 午後の良い時間
+        if (hour >= 14 && hour < 16) {
+          score += 10;
+          reasons.push("午後の生産的な時間");
+        }
 
-      // 平日
-      if (day >= 1 && day <= 5) {
-        score += 10;
-        reasons.push("平日");
-      }
+        // 平日
+        if (day >= 1 && day <= 5) {
+          score += 10;
+          reasons.push("平日");
+        }
 
-      // 避けるべき時間
-      if (day === 1 && hour < 10) {
-        score -= 10;
-        reasons.push("月曜朝は避けた方が良い");
-      }
-      if (day === 5 && hour >= 16) {
-        score -= 10;
-        reasons.push("金曜夕方は避けた方が良い");
-      }
+        // 避けるべき時間
+        if (day === 1 && hour < 10) {
+          score -= 10;
+          reasons.push("月曜朝は避けた方が良い");
+        }
+        if (day === 5 && hour >= 16) {
+          score -= 10;
+          reasons.push("金曜夕方は避けた方が良い");
+        }
 
-      return {
-        slot,
-        score: Math.max(0, Math.min(100, score)),
-        reasons
-      };
-    }).sort((a, b) => b.score - a.score).slice(0, 10);
+        return {
+          slot,
+          score: Math.max(0, Math.min(100, score)),
+          reasons,
+        };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
   }
 
   combineAvailabilityResults(
@@ -216,7 +225,7 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
 
     for (const person of participants) {
       let busySlots: TimeSlot[] = [];
-      
+
       // 各参加者のソースに応じて予定を取得
       if (person.source === "google") {
         busySlots = googleBusy.get(person.sourceId) || [];
@@ -226,7 +235,7 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
 
       results.push({
         person,
-        busySlots
+        busySlots,
       });
     }
 

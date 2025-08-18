@@ -12,7 +12,11 @@
     "pdf-extract:check": "deno check pdf-extract/pdf-extract.ts",
     "pdf-text-extract": "deno run --allow-read --allow-write --allow-env --allow-net pdf-text-extract/pdf-text-extract.ts",
     "pdf-text-extract:check": "deno check pdf-text-extract/pdf-text-extract.ts",
-    "pdf-text-extract:dev": "deno run --allow-all --watch pdf-text-extract/pdf-text-extract.ts"
+    "pdf-text-extract:dev": "deno run --allow-all --watch pdf-text-extract/pdf-text-extract.ts",
+    "meeting": "deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts",
+    "meeting:check": "deno check meeting-scheduler/app.ts",
+    "meeting:auth": "deno run --allow-net --allow-env --allow-read --allow-write meeting-scheduler/tools/get-google-refresh-token.ts",
+    "meeting:help": "deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts --help"
   },
   "compilerOptions": {
     "lib": ["deno.window", "deno.unstable"],

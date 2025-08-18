@@ -39,9 +39,13 @@ export OPENAI_API_KEY="your-openai-api-key"
 6. リフレッシュトークンを取得：
 
 ```bash
-# リフレッシュトークン取得ツールを実行
+# deno taskを使用（推奨）
+cd javascript/deno-ts
+deno task meeting:auth
+
+# または直接実行
 deno run --allow-net --allow-env --allow-read --allow-write \
-  tools/get-google-refresh-token.ts
+  meeting-scheduler/tools/get-google-refresh-token.ts
 
 # 表示される手順に従って認証
 # 取得したリフレッシュトークンは自動的に.envに保存されます
@@ -60,8 +64,11 @@ deno run --allow-net --allow-env --allow-read --allow-write \
 ### 基本的な使用例
 
 ```bash
+# deno-tsディレクトリから実行
+cd javascript/deno-ts
+
 # Googleユーザー2人、HubSpotユーザー1人で1週間の空き時間を検索
-deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
+deno task meeting \
   -s 2024-01-15T09:00:00 \
   -p "田中太郎:tanaka@example.com:google" \
   -p "山田花子:yamada@example.com:google" \
@@ -82,6 +89,10 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 ```
 
 ```bash
+# deno taskを使用
+deno task meeting --participants-file meeting-scheduler/participants.csv -f json
+
+# または直接実行
 deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
   --participants-file participants.csv \
   -f json
@@ -90,7 +101,8 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 ### OpenAI による最適化
 
 ```bash
-deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
+# deno taskを使用
+deno task meeting \
   -p "佐藤:sato@example.com:google" \
   -p "鈴木:suzuki@example.com:hubspot:67890" \
   --openai \
@@ -100,7 +112,7 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 ### 詳細オプション
 
 ```bash
-deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
+deno task meeting \
   -s 2024-01-15T09:00:00 \  # 開始日時
   -e 2024-01-22T18:00:00 \  # 終了日時
   -d 60 \                    # 会議時間（分）
@@ -111,6 +123,17 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
   --openai \                 # AI最閕化
   --verbose                  # 詳細ログ
 ```
+
+## Denoタスクコマンド
+
+`javascript/deno-ts`ディレクトリから実行:
+
+| コマンド | 説明 |
+|---------|------|
+| `deno task meeting` | 会議スケジュール調整を実行 |
+| `deno task meeting:auth` | Googleリフレッシュトークンを取得 |
+| `deno task meeting:help` | ヘルプを表示 |
+| `deno task meeting:check` | 型チェックを実行 |
 
 ## コマンドラインオプション
 

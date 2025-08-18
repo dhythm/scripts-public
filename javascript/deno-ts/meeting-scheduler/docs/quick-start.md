@@ -5,14 +5,11 @@
 ### Step 1: 環境準備（初回のみ）
 
 ```bash
-# リポジトリをクローン（既にある場合はスキップ）
-cd /path/to/your/project
-
-# meeting-schedulerディレクトリに移動
-cd meeting-scheduler
+# deno-tsディレクトリに移動
+cd javascript/deno-ts
 
 # .envファイルを作成
-cp .env.example .env
+cp meeting-scheduler/.env.example meeting-scheduler/.env
 ```
 
 ### Step 2: Google Calendar設定（Googleユーザーがいる場合）
@@ -36,13 +33,16 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 #### 2.3 リフレッシュトークンを取得
 
 ```bash
-# ツールを実行
+# deno taskを使用（推奨）
+deno task meeting:auth
+
+# または直接実行
 deno run --allow-net --allow-env --allow-read --allow-write \
-  tools/get-google-refresh-token.ts
+  meeting-scheduler/tools/get-google-refresh-token.ts
 
 # ブラウザでURLを開いて認証
 # 認証コードをツールに入力
-# リフレッシュトークンが自動的に.envに保存されます
+# リフレッシュトークンが自動的に.envに保官されます
 ```
 
 ### Step 3: HubSpot設定（HubSpotユーザーがいる場合）
@@ -61,8 +61,7 @@ HUBSPOT_API_KEY=your-hubspot-api-key
 
 ```bash
 # Googleユーザー2人の空き時間を検索
-deno run --allow-net --allow-env --allow-read \
-  app.ts \
+deno task meeting \
   -p "田中:tanaka@gmail.com:google" \
   -p "山田:yamada@gmail.com:google"
 ```
@@ -71,8 +70,7 @@ deno run --allow-net --allow-env --allow-read \
 
 ```bash
 # GoogleとHubSpotユーザーの混在
-deno run --allow-net --allow-env --allow-read \
-  app.ts \
+deno task meeting \
   -p "田中:tanaka@gmail.com:google" \
   -p "佐藤:sato@example.com:hubspot:12345"
 ```
@@ -88,25 +86,24 @@ cat > participants.csv << EOF
 EOF
 
 # 実行
-deno run --allow-net --allow-env --allow-read \
-  app.ts --participants-file participants.csv
+deno task meeting --participants-file meeting-scheduler/participants.csv
 ```
 
 ## 📊 出力形式
 
 ### テキスト（デフォルト）
 ```bash
-./app.ts -p "田中:tanaka@gmail.com:google"
+deno task meeting -p "田中:tanaka@gmail.com:google"
 ```
 
 ### JSON形式
 ```bash
-./app.ts -p "田中:tanaka@gmail.com:google" -f json
+deno task meeting -p "田中:tanaka@gmail.com:google" -f json
 ```
 
 ### Markdown形式
 ```bash
-./app.ts -p "田中:tanaka@gmail.com:google" -f markdown
+deno task meeting -p "田中:tanaka@gmail.com:google" -f markdown
 ```
 
 ## 🤖 AI最適化を使う
@@ -116,7 +113,7 @@ deno run --allow-net --allow-env --allow-read \
 echo "OPENAI_API_KEY=sk-..." >> .env
 
 # --openaiオプションを追加
-./app.ts \
+deno task meeting \
   -p "田中:tanaka@gmail.com:google" \
   -p "山田:yamada@gmail.com:google" \
   --openai
