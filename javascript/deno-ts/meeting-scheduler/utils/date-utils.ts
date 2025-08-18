@@ -19,6 +19,35 @@ export function formatDateTime(date: Date, timezone = "Asia/Tokyo"): string {
   });
 }
 
+export function formatDateTimeWithDay(date: Date, timezone = "Asia/Tokyo"): string {
+  const dateStr = date.toLocaleString("ja-JP", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const dayStr = ["日", "月", "火", "水", "木", "金", "土"][date.getDay()];
+  // 日付と時刻の間に曜日を挿入 (例: 2024/08/19 → 2024/08/19(月))
+  const parts = dateStr.split(" ");
+  return `${parts[0]}(${dayStr}) ${parts[1]}`;
+}
+
+export function formatTimeOnly(date: Date, timezone = "Asia/Tokyo"): string {
+  return date.toLocaleString("ja-JP", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function isSameDay(date1: Date, date2: Date): boolean {
+  return date1.getFullYear() === date2.getFullYear() &&
+         date1.getMonth() === date2.getMonth() &&
+         date1.getDate() === date2.getDate();
+}
+
 export function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }

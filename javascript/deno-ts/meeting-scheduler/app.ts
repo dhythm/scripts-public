@@ -7,7 +7,7 @@ import { HubSpotClient } from "./clients/hubspot.ts";
 import { AvailabilityAnalyzer } from "./processors/availability-analyzer.ts";
 import { GoogleAuth } from "./utils/auth-google.ts";
 import { HubSpotAuth } from "./utils/auth-hubspot.ts";
-import { formatDateTime, findRawAvailableSlots } from "./utils/date-utils.ts";
+import { formatDateTime, formatDateTimeWithDay, formatTimeOnly, isSameDay, findRawAvailableSlots } from "./utils/date-utils.ts";
 import { MeetingCandidate, TimeSlot, OpenAIConfig, CliOptions } from "./types/index.ts";
 
 async function main() {
@@ -254,7 +254,11 @@ function outputResults(
       
       candidates.slice(0, limit).forEach((candidate, index) => {
         const duration = Math.round((candidate.slot.end.getTime() - candidate.slot.start.getTime()) / 60000);
-        console.log(`${index + 1}. ${formatDateTime(candidate.slot.start)} - ${formatDateTime(candidate.slot.end)} （${duration}分）`);
+        const startStr = formatDateTimeWithDay(candidate.slot.start);
+        const endStr = isSameDay(candidate.slot.start, candidate.slot.end) 
+          ? formatTimeOnly(candidate.slot.end)
+          : formatDateTimeWithDay(candidate.slot.end);
+        console.log(`${index + 1}. ${startStr} - ${endStr} （${duration}分）`);
         if (candidate.reasons.length > 0) {
           console.log(`   理由: ${candidate.reasons.join(", ")} | スコア: ${candidate.score}/100`);
         } else {
@@ -315,7 +319,11 @@ function outputRawSlots(
       
       slots.forEach((slot, index) => {
         const duration = Math.round((slot.end.getTime() - slot.start.getTime()) / 60000);
-        console.log(`${index + 1}. ${formatDateTime(slot.start)} - ${formatDateTime(slot.end)} （${duration}分）`);
+        const startStr = formatDateTimeWithDay(slot.start);
+        const endStr = isSameDay(slot.start, slot.end) 
+          ? formatTimeOnly(slot.end)
+          : formatDateTimeWithDay(slot.end);
+        console.log(`${index + 1}. ${startStr} - ${endStr} （${duration}分）`);
       });
       break;
   }
