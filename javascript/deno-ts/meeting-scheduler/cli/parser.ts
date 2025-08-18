@@ -103,18 +103,39 @@ export function parseCliArgs(args: string[]): CliOptions {
 }
 
 function parseParticipant(str: string): Person {
-  // フォーマット: "名前:email:calendarId:hubspotUserId"
+  // フォーマット: "名前:email:source:sourceId"
+  // source: "google" または "hubspot"
   const parts = str.split(":");
   
-  if (parts.length < 2) {
-    throw new Error(`無効な参加者形式: ${str}\n期待される形式: 名前:email[:calendarId][:hubspotUserId]`);
+  if (parts.length < 3) {
+    throw new Error(
+      `無効な参加者形式: ${str}\n` +
+      `期待される形式: 名前:email:source[:sourceId]\n` +
+      `source: "google" または "hubspot"\n` +
+      `sourceId: 省略時はemailが使用されます（Googleの場合のみ）`
+    );
+  }
+
+  const source = parts[2].toLowerCase();
+  if (source !== "google" && source !== "hubspot") {
+    throw new Error(`無効なソース: ${source}。"google" または "hubspot" を指定してください。`);
+  }
+
+  // sourceIdが省略された場合、Googleならemailを使用、HubSpotはエラー
+  let sourceId = parts[3];
+  if (!sourceId) {
+    if (source === "google") {
+      sourceId = parts[1]; // emailをcalendarIdとして使用
+    } else {
+      throw new Error("HubSpotユーザーにはユーザーIDの指定が必須です。");
+    }
   }
 
   return {
     name: parts[0],
     email: parts[1],
-    calendarId: parts[2] || parts[1], // デフォルトはemailをcalendarIdとして使用
-    hubspotUserId: parts[3] || undefined,
+    source: source as "google" | "hubspot",
+    sourceId,
   };
 }
 
@@ -125,15 +146,29 @@ function parseParticipantsFile(filePath: string): Person[] {
     
     return lines.map(line => {
       const parts = line.split(",").map(p => p.trim());
-      if (parts.length < 2) {
-        throw new Error(`無効な行: ${line}`);
+      if (parts.length < 3) {
+        throw new Error(`無効な行: ${line}\nフォーマット: 名前,email,source[,sourceId]`);
+      }
+      
+      const source = parts[2].toLowerCase();
+      if (source !== "google" && source !== "hubspot") {
+        throw new Error(`無効なソース: ${source}`);
+      }
+
+      let sourceId = parts[3];
+      if (!sourceId) {
+        if (source === "google") {
+          sourceId = parts[1];
+        } else {
+          throw new Error(`HubSpotユーザー ${parts[0]} にはユーザーIDが必要です`);
+        }
       }
       
       return {
         name: parts[0],
         email: parts[1],
-        calendarId: parts[2] || parts[1],
-        hubspotUserId: parts[3] || undefined,
+        source: source as "google" | "hubspot",
+        sourceId,
       };
     });
   } catch (error) {
@@ -152,7 +187,7 @@ function printHelp(): void {
   -s, --start <日時>         検索開始日時 (例: 2024-01-15T09:00:00)
   -e, --end <日時>           検索終了日時 (例: 2024-01-22T18:00:00)
   -d, --duration <分>        会議の長さ（分単位、デフォルト: 60）
-  -p, --participant <情報>   参加者情報 (形式: 名前:email[:calendarId][:hubspotUserId])
+  -p, --participant <情報>   参加者情報 (形式: 名前:email:source[:sourceId])
   --participants-file <path> CSVファイルから参加者を読み込み
   --all-day                  営業時間外も含める（デフォルトは9-18時のみ）
   --timezone <tz>            タイムゾーン（デフォルト: Asia/Tokyo）
@@ -169,8 +204,11 @@ function printHelp(): void {
   OPENAI_API_KEY            OpenAI APIキー（--openai使用時）
 
 使用例:
-  # 2人の参加者で1週間の空き時間を検索
-  ./app.ts -s 2024-01-15T09:00:00 -p "田中太郎:tanaka@example.com" -p "山田花子:yamada@example.com"
+  # Google 2人、HubSpot 1人の参加者で空き時間を検索
+  ./app.ts -s 2024-01-15T09:00:00 \\
+    -p "田中太郎:tanaka@example.com:google" \\
+    -p "山田花子:yamada@example.com:google" \\
+    -p "佐藤次郎:sato@example.com:hubspot:12345"
 
   # CSVファイルから参加者を読み込み、JSON形式で出力
   ./app.ts --participants-file participants.csv -f json
@@ -180,8 +218,9 @@ function printHelp(): void {
 
 参加者CSVファイル形式:
   # コメント行
-  名前,メールアドレス,GoogleカレンダーID,HubSpotユーザーID
-  田中太郎,tanaka@example.com,tanaka@example.com,12345
-  山田花子,yamada@example.com,,67890
+  # 名前,メールアドレス,ソース(google/hubspot),ソースID
+  田中太郎,tanaka@example.com,google,tanaka@example.com
+  山田花子,yamada@example.com,google
+  佐藤次郎,sato@example.com,hubspot,12345
   `);
 }

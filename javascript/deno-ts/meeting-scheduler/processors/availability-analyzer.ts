@@ -215,26 +215,18 @@ ${preferences ? `追加の要望: ${preferences}` : ""}
     const results: AvailabilityResult[] = [];
 
     for (const person of participants) {
-      const busySlots: TimeSlot[] = [];
+      let busySlots: TimeSlot[] = [];
       
-      // Google Calendarの予定
-      if (person.calendarId) {
-        const googleSlots = googleBusy.get(person.calendarId) || [];
-        busySlots.push(...googleSlots);
+      // 各参加者のソースに応じて予定を取得
+      if (person.source === "google") {
+        busySlots = googleBusy.get(person.sourceId) || [];
+      } else if (person.source === "hubspot") {
+        busySlots = hubspotBusy.get(person.sourceId) || [];
       }
-
-      // HubSpotの予定
-      if (person.hubspotUserId) {
-        const hubspotSlots = hubspotBusy.get(person.email) || [];
-        busySlots.push(...hubspotSlots);
-      }
-
-      // 重複を除去してマージ
-      const mergedBusySlots = mergeTimeSlots(busySlots);
 
       results.push({
         person,
-        busySlots: mergedBusySlots
+        busySlots
       });
     }
 

@@ -14,8 +14,8 @@ export interface TimeSlot {
 export interface Person {
   name: string;
   email: string;
-  calendarId?: string;
-  hubspotUserId?: string;
+  source: "google" | "hubspot";
+  sourceId: string; // Google: calendarId, HubSpot: userId
 }
 
 export interface AvailabilityResult {

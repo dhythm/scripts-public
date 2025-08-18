@@ -28,7 +28,7 @@ async function main() {
     let hubspotAuth: HubSpotAuth | undefined;
 
     // Google Calendar認証（必要な場合）
-    const hasGoogleCalendar = options.participants.some(p => p.calendarId);
+    const hasGoogleCalendar = options.participants.some(p => p.source === "google");
     if (hasGoogleCalendar) {
       try {
         googleAuth = GoogleAuth.fromEnv();
@@ -41,7 +41,7 @@ async function main() {
     }
 
     // HubSpot認証（必要な場合）
-    const hasHubSpot = options.participants.some(p => p.hubspotUserId);
+    const hasHubSpot = options.participants.some(p => p.source === "hubspot");
     if (hasHubSpot) {
       try {
         hubspotAuth = HubSpotAuth.fromEnv();
@@ -72,10 +72,11 @@ async function main() {
           options.endDate
         );
 
-        for (const [calendarId, slots] of busyData) {
-          googleBusy.set(calendarId, slots);
+        for (const [sourceId, slots] of busyData) {
+          googleBusy.set(sourceId, slots);
           if (options.verbose) {
-            console.log(`  ${calendarId}: ${slots.length}件の予定`);
+            const person = options.participants.find(p => p.sourceId === sourceId);
+            console.log(`  ${person?.name || sourceId}: ${slots.length}件の予定`);
           }
         }
       } catch (error) {
@@ -98,10 +99,11 @@ async function main() {
           options.endDate
         );
 
-        for (const [email, slots] of busyData) {
-          hubspotBusy.set(email, slots);
+        for (const [sourceId, slots] of busyData) {
+          hubspotBusy.set(sourceId, slots);
           if (options.verbose) {
-            console.log(`  ${email}: ${slots.length}件の予定`);
+            const person = options.participants.find(p => p.sourceId === sourceId);
+            console.log(`  ${person?.name || sourceId}: ${slots.length}件の予定`);
           }
         }
       } catch (error) {

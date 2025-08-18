@@ -111,20 +111,19 @@ export class HubSpotClient {
     endDate: Date
   ): Promise<Map<string, TimeSlot[]>> {
     const result = new Map<string, TimeSlot[]>();
+    const hubspotPeople = people.filter(p => p.source === "hubspot");
 
-    for (const person of people) {
-      if (person.hubspotUserId) {
-        try {
-          const busySlots = await this.getUserAvailability(
-            person.hubspotUserId,
-            startDate,
-            endDate
-          );
-          result.set(person.email, busySlots);
-        } catch (error) {
-          console.error(`${person.name}のHubSpot予定取得エラー:`, error);
-          result.set(person.email, []);
-        }
+    for (const person of hubspotPeople) {
+      try {
+        const busySlots = await this.getUserAvailability(
+          person.sourceId,
+          startDate,
+          endDate
+        );
+        result.set(person.sourceId, busySlots);
+      } catch (error) {
+        console.error(`${person.name}のHubSpot予定取得エラー:`, error);
+        result.set(person.sourceId, []);
       }
     }
 

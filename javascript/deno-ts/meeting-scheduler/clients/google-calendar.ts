@@ -97,9 +97,8 @@ export class GoogleCalendarClient {
     timeMin: Date,
     timeMax: Date
   ): Promise<Map<string, TimeSlot[]>> {
-    const calendarIds = people
-      .filter(p => p.calendarId)
-      .map(p => p.calendarId!);
+    const googlePeople = people.filter(p => p.source === "google");
+    const calendarIds = googlePeople.map(p => p.sourceId);
     
     if (calendarIds.length === 0) {
       return new Map();

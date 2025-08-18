@@ -4,9 +4,9 @@
 
 ## 機能
 
-- 🗓️ Google Calendar API から複数人の予定を取得
-- 📅 HubSpot Meeting API から予定を取得
-- 🔍 全員が空いている時間を自動検出
+- 🗓️ Google Calendar API から参加者の予定を取得
+- 📅 HubSpot Meeting API から参加者の予定を取得
+- 🔍 異なるカレンダーシステムを使う参加者間で空き時間を検出
 - 🤖 OpenAI API を使用した最適な時間の提案（オプション）
 - 📊 複数の出力形式（テキスト、JSON、Markdown）
 
@@ -48,11 +48,12 @@ export OPENAI_API_KEY="your-openai-api-key"
 ### 基本的な使用例
 
 ```bash
-# 2人の参加者で1週間の空き時間を検索
+# Googleユーザー2人、HubSpotユーザー1人で1週間の空き時間を検索
 deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
   -s 2024-01-15T09:00:00 \
-  -p "田中太郎:tanaka@example.com" \
-  -p "山田花子:yamada@example.com"
+  -p "田中太郎:tanaka@example.com:google" \
+  -p "山田花子:yamada@example.com:google" \
+  -p "佐藤次郎:sato@example.com:hubspot:12345"
 ```
 
 ### 参加者ファイルを使用
@@ -61,10 +62,11 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 
 `participants.csv`:
 ```csv
-# 名前,メールアドレス,GoogleカレンダーID,HubSpotユーザーID
-田中太郎,tanaka@example.com,tanaka@example.com,12345
-山田花子,yamada@example.com,,67890
-佐藤次郎,sato@example.com,sato@gmail.com,
+# 名前,メールアドレス,ソース(google/hubspot),ソースID
+田中太郎,tanaka@example.com,google,tanaka@example.com
+山田花子,yamada@example.com,google
+佐藤次郎,sato@example.com,hubspot,12345
+鈴木一郎,suzuki@example.com,google,suzuki@gmail.com
 ```
 
 ```bash
@@ -77,8 +79,8 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 
 ```bash
 deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
-  -p "佐藤:sato@example.com" \
-  -p "鈴木:suzuki@example.com" \
+  -p "佐藤:sato@example.com:google" \
+  -p "鈴木:suzuki@example.com:hubspot:67890" \
   --openai \
   -d 90  # 90分の会議
 ```
@@ -90,11 +92,11 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
   -s 2024-01-15T09:00:00 \  # 開始日時
   -e 2024-01-22T18:00:00 \  # 終了日時
   -d 60 \                    # 会議時間（分）
-  -p "名前:email:calendarId:hubspotId" \
+  -p "名前:email:source:sourceId" \
   --all-day \                # 営業時間外も含める
   --timezone "America/New_York" \
   -f markdown \              # 出力形式
-  --openai \                 # AI最適化
+  --openai \                 # AI最閕化
   --verbose                  # 詳細ログ
 ```
 
@@ -105,7 +107,7 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 | `-s, --start` | 検索開始日時 | 現在時刻 |
 | `-e, --end` | 検索終了日時 | 開始から7日後 |
 | `-d, --duration` | 会議の長さ（分） | 60 |
-| `-p, --participant` | 参加者情報 | 必須 |
+| `-p, --participant` | 参加者情報 (名前:email:source[:sourceId]) | 必須 |
 | `--participants-file` | 参加者CSVファイル | - |
 | `--all-day` | 営業時間外も含める | false |
 | `--timezone` | タイムゾーン | Asia/Tokyo |
@@ -167,6 +169,13 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 ```
 
 ## トラブルシューティング
+
+### 参加者の指定方法
+
+- **source**: "google" または "hubspot" を指定
+- **sourceId**: 
+  - Googleの場合: カレンダーID（省略時はemailが使用される）
+  - HubSpotの場合: ユーザーID（必須）
 
 ### Google Calendar API エラー
 
