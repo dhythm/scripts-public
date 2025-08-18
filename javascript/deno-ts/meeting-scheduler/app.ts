@@ -1,6 +1,7 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read
 
 import { parseCliArgs } from "./cli/parser.ts";
+import { loadEnv } from "./utils/env.ts";
 import { GoogleCalendarClient } from "./clients/google-calendar.ts";
 import { HubSpotClient } from "./clients/hubspot.ts";
 import { AvailabilityAnalyzer } from "./processors/availability-analyzer.ts";
@@ -11,6 +12,9 @@ import { MeetingCandidate, TimeSlot, OpenAIConfig } from "./types/index.ts";
 
 async function main() {
   try {
+    // .envファイルを読み込み
+    await loadEnv();
+    
     // CLIオプションを解析
     const options = parseCliArgs(Deno.args);
 
@@ -115,6 +119,7 @@ async function main() {
     const analyzer = new AvailabilityAnalyzer(
       options.useOpenAI ? {
         apiKey: Deno.env.get("OPENAI_API_KEY") || "",
+        model: Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini",
       } as OpenAIConfig : undefined
     );
 

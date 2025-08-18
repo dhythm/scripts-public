@@ -5,10 +5,10 @@ export function parseCliArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     startDate: new Date(),
     endDate: new Date(),
-    duration: 60,
+    duration: parseInt(Deno.env.get("DEFAULT_DURATION") || "60", 10),
     participants: [],
     businessHoursOnly: true,
-    timezone: "Asia/Tokyo",
+    timezone: Deno.env.get("DEFAULT_TIMEZONE") || "Asia/Tokyo",
     outputFormat: "text",
     useOpenAI: false,
     verbose: false,

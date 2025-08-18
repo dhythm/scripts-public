@@ -50,10 +50,11 @@ export class GoogleAuth {
     if (!clientId || !clientSecret || !refreshToken) {
       throw new Error(
         "Google Calendar API の認証情報が設定されていません。\n" +
-        "以下の環境変数を設定してください:\n" +
+        ".envファイルに以下の環境変数を設定してください:\n" +
         "- GOOGLE_CLIENT_ID\n" +
         "- GOOGLE_CLIENT_SECRET\n" +
-        "- GOOGLE_REFRESH_TOKEN"
+        "- GOOGLE_REFRESH_TOKEN\n\n" +
+        ".env.exampleを参考に設定してください。"
       );
     }
 

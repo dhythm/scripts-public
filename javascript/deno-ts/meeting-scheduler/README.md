@@ -34,8 +34,20 @@ export OPENAI_API_KEY="your-openai-api-key"
 1. [Google Cloud Console](https://console.cloud.google.com/) にアクセス
 2. 新しいプロジェクトを作成または既存のプロジェクトを選択
 3. Calendar API を有効化
-4. OAuth 2.0 クライアント ID を作成
-5. リフレッシュトークンを取得（OAuth2 フローを実行）
+4. OAuth 2.0 クライアント ID を作成（リダイレクトURIに`http://localhost`を追加）
+5. `.env`ファイルにクライアントIDとシークレットを設定
+6. リフレッシュトークンを取得：
+
+```bash
+# リフレッシュトークン取得ツールを実行
+deno run --allow-net --allow-env --allow-read --allow-write \
+  tools/get-google-refresh-token.ts
+
+# 表示される手順に従って認証
+# 取得したリフレッシュトークンは自動的に.envに保存されます
+```
+
+詳細な設定手順は[Google OAuth設定ガイド](docs/google-oauth-setup.md)を参照してください。
 
 ### 3. HubSpot API の設定
 
@@ -114,6 +126,19 @@ deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts \
 | `-f, --format` | 出力形式 (text/json/markdown) | text |
 | `--openai` | OpenAI APIで最適化 | false |
 | `-v, --verbose` | 詳細ログ表示 | false |
+
+### 環境変数（.envファイル）
+
+| 変数名 | 説明 | デフォルト |
+|--------|------|-----------|
+| `GOOGLE_CLIENT_ID` | Google OAuth2 クライアントID | 必須（Google使用時） |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth2 クライアントシークレット | 必須（Google使用時） |
+| `GOOGLE_REFRESH_TOKEN` | Google OAuth2 リフレッシュトークン | 必須（Google使用時） |
+| `HUBSPOT_API_KEY` | HubSpot APIキー | 必須（HubSpot使用時） |
+| `OPENAI_API_KEY` | OpenAI APIキー | 必須（--openai使用時） |
+| `OPENAI_MODEL` | 使用するOpenAIモデル | gpt-4o-mini |
+| `DEFAULT_TIMEZONE` | デフォルトのタイムゾーン | Asia/Tokyo |
+| `DEFAULT_DURATION` | デフォルトの会議時間（分） | 60 |
 
 ## 出力例
 

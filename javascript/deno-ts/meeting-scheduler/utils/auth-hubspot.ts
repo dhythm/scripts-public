@@ -24,7 +24,8 @@ export class HubSpotAuth {
     if (!apiKey) {
       throw new Error(
         "HubSpot API の認証情報が設定されていません。\n" +
-        "環境変数 HUBSPOT_API_KEY を設定してください。"
+        ".envファイルに環境変数 HUBSPOT_API_KEY を設定してください。\n\n" +
+        ".env.exampleを参考に設定してください。"
       );
     }
 
