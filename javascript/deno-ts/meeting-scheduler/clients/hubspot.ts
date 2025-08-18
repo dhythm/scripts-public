@@ -105,6 +105,63 @@ export class HubSpotClient {
     return [];
   }
 
+  async getSchedulerAvailability(
+    meetingLink: string,
+    timezone: string = "Asia/Tokyo"
+  ): Promise<TimeSlot[]> {
+    // HubSpot Scheduler API v3 を使用
+    const headers = this.auth.getAuthHeader();
+    
+    if (Deno.env.get("DEBUG") === "true") {
+      console.log("\n📅 HubSpot Scheduler API リクエスト:");
+      console.log(`  Meeting Link: ${meetingLink}`);
+      console.log(`  Timezone: ${timezone}`);
+    }
+    
+    const response = await fetch(
+      `${this.baseUrl}/scheduler/v3/meetings/meeting-links/book/availability-page/${meetingLink}?timezone=${timezone}`,
+      {
+        headers,
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`HubSpot Scheduler API エラー: ${error}`);
+    }
+
+    const data = await response.json();
+    
+    if (Deno.env.get("DEBUG") === "true") {
+      console.log("\n📅 HubSpot Scheduler API レスポンス:");
+      console.log(`  busyTimes数: ${data.allUsersBusyTimes?.[0]?.busyTimes?.length || 0}`);
+    }
+    
+    const busySlots: TimeSlot[] = [];
+    
+    // allUsersBusyTimesから予約済み時間を抽出
+    for (const userBusy of data.allUsersBusyTimes || []) {
+      if (Deno.env.get("DEBUG") === "true") {
+        console.log(`\n  ユーザー: ${userBusy.meetingsUser?.userProfile?.fullName || "不明"}`);
+        console.log(`  Email: ${userBusy.meetingsUser?.userProfile?.email || "不明"}`);
+      }
+      
+      for (const busy of userBusy.busyTimes || []) {
+        const slot = {
+          start: new Date(busy.start),
+          end: new Date(busy.end),
+        };
+        busySlots.push(slot);
+        
+        if (Deno.env.get("DEBUG") === "true") {
+          console.log(`    - ${slot.start.toISOString()} ~ ${slot.end.toISOString()}`);
+        }
+      }
+    }
+    
+    return busySlots;
+  }
+
   async getMultipleUsersBusy(
     people: Person[],
     startDate: Date,
@@ -115,12 +172,22 @@ export class HubSpotClient {
 
     for (const person of hubspotPeople) {
       try {
-        const busySlots = await this.getUserAvailability(
+        // Scheduler APIを使用（meetingLinkとして扱う）
+        const busySlots = await this.getSchedulerAvailability(
           person.sourceId,
-          startDate,
-          endDate
+          Deno.env.get("DEFAULT_TIMEZONE") || "Asia/Tokyo"
         );
-        result.set(person.sourceId, busySlots);
+        
+        // 期間でフィルタリング
+        const filteredSlots = busySlots.filter(
+          slot => slot.start >= startDate && slot.end <= endDate
+        );
+        
+        result.set(person.sourceId, filteredSlots);
+        
+        if (Deno.env.get("DEBUG") === "true") {
+          console.log(`\n${person.name}: ${filteredSlots.length}件の予定（フィルタ後）`);
+        }
       } catch (error) {
         console.error(`${person.name}のHubSpot予定取得エラー:`, error);
         result.set(person.sourceId, []);

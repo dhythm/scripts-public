@@ -147,7 +147,7 @@ function parseParticipant(str: string): Person {
     if (source === "google") {
       sourceId = parts[1]; // emailをcalendarIdとして使用
     } else {
-      throw new Error("HubSpotユーザーにはユーザーIDの指定が必須です。");
+      throw new Error("HubSpotユーザーにはミーティングリンクの指定が必須です。");
     }
   }
 
@@ -208,6 +208,8 @@ function printHelp(): void {
   -e, --end <日時>           検索終了日時 (例: 2024-01-22T18:00:00)
   -d, --duration <分>        会議の長さ（分単位、デフォルト: 60）
   -p, --participant <情報>   参加者情報 (形式: 名前:email:source[:sourceId])
+                              Google: sourceIdはcalendarId（省略時email使用）
+                              HubSpot: sourceIdはmeeting-link（必須）
   --participants-file <path> CSVファイルから参加者を読み込み
   --all-day                  営業時間外も含める（デフォルトは9-18時のみ）
   --timezone <tz>            タイムゾーン（デフォルト: Asia/Tokyo）
@@ -231,7 +233,7 @@ function printHelp(): void {
   ./app.ts -s 2024-01-15T09:00:00 \\
     -p "田中太郎:tanaka@example.com:google" \\
     -p "山田花子:yamada@example.com:google" \\
-    -p "佐藤次郎:sato@example.com:hubspot:12345"
+    -p "安達裕哉:yuyadachi@workwonders.jp:hubspot:yuyadachi"
 
   # CSVファイルから参加者を読み込み、JSON形式で出力
   ./app.ts --participants-file participants.csv -f json
@@ -253,6 +255,6 @@ function printHelp(): void {
   # 名前,メールアドレス,ソース(google/hubspot),ソースID
   田中太郎,tanaka@example.com,google,tanaka@example.com
   山田花子,yamada@example.com,google
-  佐藤次郎,sato@example.com,hubspot,12345
+  安達裕哉,yuyadachi@workwonders.jp,hubspot,yuyadachi
   `);
 }
