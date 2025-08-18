@@ -521,14 +521,15 @@ function processDocumentAiResponse(
     return {
       fullText: response.document.text || "",
       pages: [],
-      entities: response.document.entities?.map((entity) => ({
-        type: entity.type,
-        text: entity.mentionText || "",
-        properties: entity.properties?.reduce((acc, prop) => {
-          acc[prop.type] = prop.mentionText || "";
-          return acc;
-        }, {} as Record<string, string>),
-      })) || [],
+      entities:
+        response.document.entities?.map((entity) => ({
+          type: entity.type,
+          text: entity.mentionText || "",
+          properties: entity.properties?.reduce((acc, prop) => {
+            acc[prop.type] = prop.mentionText || "";
+            return acc;
+          }, {} as Record<string, string>),
+        })) || [],
     };
   }
 }
@@ -667,13 +668,11 @@ function processDocumentOcrResponse(
 /**
  * Layout Parser形式のテーブルセルからテキストを抽出
  */
-function extractTextFromLayoutTableCell(
-  cell: any
-): string {
+function extractTextFromLayoutTableCell(cell: any): string {
   if (!cell.blocks || cell.blocks.length === 0) {
     return "";
   }
-  
+
   return cell.blocks
     .map((block: any) => {
       if (block.textBlock && block.textBlock.text) {
@@ -688,9 +687,10 @@ function extractTextFromLayoutTableCell(
 /**
  * Layout Parser形式のテーブルを処理
  */
-function processLayoutTableBlock(
-  tableBlock: any
-): { headers: string[][]; rows: string[][] } {
+function processLayoutTableBlock(tableBlock: any): {
+  headers: string[][];
+  rows: string[][];
+} {
   const headers: string[][] = [];
   const rows: string[][] = [];
 
@@ -745,7 +745,7 @@ function processLayoutParserResponse(
 
   // ページごとのブロックを収集
   const pageBlocks: Map<number, any[]> = new Map();
-  
+
   response.document.documentLayout.blocks.forEach((block) => {
     const pageNum = block.pageSpan?.pageStart || 1;
     if (!pageBlocks.has(pageNum)) {
@@ -756,10 +756,10 @@ function processLayoutParserResponse(
 
   // 全テキストを収集（ページ順）
   const allTexts: string[] = [];
-  
+
   // ページごとに処理
   const sortedPageNumbers = Array.from(pageBlocks.keys()).sort((a, b) => a - b);
-  
+
   sortedPageNumbers.forEach((pageNum) => {
     const blocks = pageBlocks.get(pageNum) || [];
     const pageData = {
@@ -776,7 +776,7 @@ function processLayoutParserResponse(
         if (text) {
           pageTexts.push(text);
           allTexts.push(text);
-          
+
           pageData.elements.push({
             type: block.textBlock.type === "paragraph" ? "paragraph" : "block",
             content: text,
@@ -784,18 +784,18 @@ function processLayoutParserResponse(
         }
       } else if (block.tableBlock) {
         const tableData = processLayoutTableBlock(block.tableBlock);
-        
+
         // テーブルのテキスト表現を生成
         const tableText = [
-          ...tableData.headers.map(row => row.join(" | ")),
-          ...tableData.rows.map(row => row.join(" | "))
+          ...tableData.headers.map((row) => row.join(" | ")),
+          ...tableData.rows.map((row) => row.join(" | ")),
         ].join("\n");
-        
+
         if (tableText) {
           pageTexts.push(tableText);
           allTexts.push(tableText);
         }
-        
+
         pageData.elements.push({
           type: "table",
           content: tableText,
@@ -916,6 +916,7 @@ function formatStructuredOutput(data: StructuredOutput): string {
  */
 function createMarkdownPrompt(data: StructuredOutput): string {
   const prompt = `以下は日本語PDFドキュメントをOCRで構造化したデータです。このデータを元の文書の構造と内容を正確に再現したマークダウン形式に変換してください。
+元の PDF ファイルを知らない人が読んでもわかるように、マークダウンの階層構造を意識してください。
 
 極めて重要な指示：
 - **与えられた構造化データに含まれる内容のみを出力し、データに存在しない要素は一切追加しない**
@@ -930,6 +931,20 @@ function createMarkdownPrompt(data: StructuredOutput): string {
 - 「薬効分類」「成分名」「算定方式」「主な用法・用量」などは #### （レベル4）
 - 「有用性加算」「補正加算」「市場規模予測」などのサブセクションも #### （レベル4）
 - さらに詳細な項目（「イ. 効能・効果」「ロ. 薬理作用」など）は ##### （レベル5）
+- 薬価の算定情報は、算定方式によってレイアウトが変わります（下記は例なので、異なるレイアウトや方式が出る場合もあります）
+  - 算定方式: 類似薬効比較方式（Ⅰ）
+    - 比較薬
+    - 補正加算
+    - 外国平均価格調整
+    - キット特徴部費の原材料費
+  - 算定方式: 原価計算方式
+    - 原価計算
+      - 製品総原価
+      - 営業利益
+      - 流通けいひ
+      - 消費税
+    - 補正加算
+    外国平均価格調整
 
 要件：
 1. 表は適切なマークダウンテーブル形式で表現
@@ -1197,26 +1212,28 @@ async function extractTextFromPdf(pdfPath: string): Promise<{
   if (Deno.env.get("DEBUG")) {
     console.log(`総ページ数: ${structuredData.pages.length}`);
     console.log(`総テキスト長: ${structuredData.fullText.length} 文字`);
-    
+
     structuredData.pages.forEach((page) => {
       console.log(`ページ ${page.pageNumber}: ${page.elements.length} 要素`);
       const elementTypes = page.elements.reduce((acc, elem) => {
         acc[elem.type] = (acc[elem.type] || 0) + 1;
         return acc;
       }, {} as Record<string, number>);
-      
+
       Object.entries(elementTypes).forEach(([type, count]) => {
         console.log(`  - ${type}: ${count}`);
       });
     });
-    
+
     if (structuredData.entities && structuredData.entities.length > 0) {
       console.log(`エンティティ数: ${structuredData.entities.length}`);
     }
-    
+
     // 生のレスポンスの形式も出力
     if (response.document?.documentLayout) {
-      console.log(`Layout Parserブロック数: ${response.document.documentLayout.blocks.length}`);
+      console.log(
+        `Layout Parserブロック数: ${response.document.documentLayout.blocks.length}`
+      );
     } else if (response.document?.pages) {
       console.log(`Document OCRページ数: ${response.document.pages.length}`);
     }
@@ -1268,7 +1285,9 @@ async function main(): Promise<void> {
       );
       console.error("\nオプション:");
       console.error("  --json       JSON形式で保存（構造化データ）");
-      console.error("  --raw        Document AI OCR結果をそのまま保存（生データ）");
+      console.error(
+        "  --raw        Document AI OCR結果をそのまま保存（生データ）"
+      );
       console.error(
         "  --markdown   OpenAI APIを使用してマークダウンに変換して保存"
       );

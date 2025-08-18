@@ -1,0 +1,9 @@
+# 参加者リストのサンプル
+# フォーマット: 名前,メールアドレス,GoogleカレンダーID（省略可）,HubSpotユーザーID（省略可）
+# GoogleカレンダーIDを省略した場合はメールアドレスが使用されます
+
+田中太郎,tanaka@example.com,tanaka@example.com,12345
+山田花子,yamada@example.com,,67890
+佐藤次郎,sato@example.com,sato@gmail.com,
+鈴木一郎,suzuki@example.com,suzuki@example.com,
+高橋美咲,takahashi@example.com,,
