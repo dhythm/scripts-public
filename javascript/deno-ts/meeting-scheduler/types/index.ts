@@ -43,6 +43,7 @@ export interface CliOptions {
   showAll: boolean; // 全ての候補を表示
   limit?: number; // 表示する候補数の上限
   rawSlots: boolean; // 連続した空き時間ブロックを表示
+  minDuration?: number; // 最小会議時間（分）
 }
 
 export interface GoogleCalendarConfig {

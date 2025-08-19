@@ -131,15 +131,22 @@ async function main() {
 
     // rawSlotsモードの場合は連続した空き時間を表示
     if (options.rawSlots) {
+      // minDurationが指定されていない場合はdurationを使用
+      const minDuration = options.minDuration || options.duration;
+      
       const rawSlots = findRawAvailableSlots(
         availabilityResults,
         options.startDate,
         options.endDate,
-        options.businessHoursOnly
+        options.businessHoursOnly,
+        minDuration
       );
       
       if (options.verbose) {
         console.log(`\n連続した空き時間ブロック: ${rawSlots.length}件`);
+        if (minDuration) {
+          console.log(`  （${minDuration}分以上の空き時間のみ表示）`);
+        }
       }
       
       outputRawSlots(rawSlots, options);

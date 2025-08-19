@@ -118,7 +118,8 @@ export function findRawAvailableSlots(
   availabilityResults: { busySlots: TimeSlot[] }[],
   start: Date,
   end: Date,
-  businessHoursOnly = false
+  businessHoursOnly = false,
+  minDurationMinutes?: number
 ): TimeSlot[] {
   // 全ての忙しい時間を統合
   const allBusySlots: TimeSlot[] = [];
@@ -160,11 +161,20 @@ export function findRawAvailableSlots(
   }
   
   // 営業時間でフィルタリング（必要な場合）
+  let filteredSlots = availableSlots;
   if (businessHoursOnly) {
-    return splitByBusinessHours(availableSlots);
+    filteredSlots = splitByBusinessHours(availableSlots);
   }
   
-  return availableSlots;
+  // 最小時間でフィルタリング
+  if (minDurationMinutes && minDurationMinutes > 0) {
+    filteredSlots = filteredSlots.filter(slot => {
+      const durationInMinutes = (slot.end.getTime() - slot.start.getTime()) / 60000;
+      return durationInMinutes >= minDurationMinutes;
+    });
+  }
+  
+  return filteredSlots;
 }
 
 function splitByBusinessHours(slots: TimeSlot[]): TimeSlot[] {

@@ -15,6 +15,7 @@ export function parseCliArgs(args: string[]): CliOptions {
     showAll: false,
     limit: undefined,
     rawSlots: false,
+    minDuration: undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -101,6 +102,16 @@ export function parseCliArgs(args: string[]): CliOptions {
 
       case "--raw-slots":
         options.rawSlots = true;
+        break;
+
+      case "--min-duration":
+      case "-m":
+        if (i + 1 < args.length) {
+          options.minDuration = parseInt(args[++i], 10);
+          if (options.minDuration <= 0) {
+            throw new Error("--min-duration は1以上の数値を指定してください");
+          }
+        }
         break;
 
       case "--help":
@@ -207,6 +218,7 @@ function printHelp(): void {
   -s, --start <日時>         検索開始日時 (例: 2024-01-15T09:00:00)
   -e, --end <日時>           検索終了日時 (例: 2024-01-22T18:00:00)
   -d, --duration <分>        会議の長さ（分単位、デフォルト: 60）
+  -m, --min-duration <分>    最小会議時間（--raw-slots時に使用）
   -p, --participant <情報>   参加者情報 (形式: 名前:email:source[:sourceId])
                               Google: sourceIdはcalendarId（省略時email使用）
                               HubSpot: sourceIdはmeeting-link（必須）
@@ -249,6 +261,9 @@ function printHelp(): void {
 
   # 連続した空き時間ブロックを表示
   ./app.ts -p "佐藤:sato@example.com:google" --raw-slots
+
+  # 60分以上の空き時間のみ表示
+  ./app.ts -p "鈴木:suzuki@example.com:google" --raw-slots -m 60
 
 参加者CSVファイル形式:
   # コメント行
