@@ -107,7 +107,8 @@ export class HubSpotClient {
 
   async getSchedulerAvailability(
     meetingLink: string,
-    timezone: string = "Asia/Tokyo"
+    timezone: string = "Asia/Tokyo",
+    useAvailabilities: boolean = false
   ): Promise<TimeSlot[]> {
     // HubSpot Scheduler API v3 を使用
     const headers = this.auth.getAuthHeader();
@@ -135,6 +136,42 @@ export class HubSpotClient {
     if (Deno.env.get("DEBUG") === "true") {
       console.log("\n📅 HubSpot Scheduler API レスポンス:");
       console.log(`  busyTimes数: ${data.allUsersBusyTimes?.[0]?.busyTimes?.length || 0}`);
+      
+      // availabilitiesの情報も表示
+      const availCount = data.linkAvailability?.linkAvailabilityByDuration?.["3600000"]?.availabilities?.length || 0;
+      console.log(`  availabilities数 (60分枠): ${availCount}`);
+      console.log("  注意: APIからはUTC時刻で返されます");
+    }
+    
+    // availabilitiesを使用する場合（Webページと同じ空き時間）
+    if (useAvailabilities && data.linkAvailability?.linkAvailabilityByDuration) {
+      const availableSlots: TimeSlot[] = [];
+      const duration60 = data.linkAvailability.linkAvailabilityByDuration["3600000"];
+      
+      if (duration60?.availabilities) {
+        if (Deno.env.get("DEBUG") === "true") {
+          console.log("\n  📆 Availabilities (空き時間) を使用:");
+        }
+        
+        for (const avail of duration60.availabilities) {
+          const slot = {
+            start: new Date(avail.startMillisUtc),
+            end: new Date(avail.endMillisUtc),
+          };
+          
+          if (Deno.env.get("DEBUG") === "true") {
+            const startJST = slot.start.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+            const endJST = slot.end.toLocaleTimeString("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit" });
+            console.log(`    空き: ${startJST} - ${endJST}`);
+          }
+          
+          availableSlots.push(slot);
+        }
+      }
+      
+      // availabilitiesをbusySlotsに変換（逆転）
+      // これは他のロジックとの互換性のため
+      return this.convertAvailabilitiesToBusySlots(availableSlots, new Date("2025-08-25T00:00:00+09:00"), new Date("2025-08-29T23:59:59+09:00"));
     }
     
     const busySlots: TimeSlot[] = [];
@@ -154,9 +191,47 @@ export class HubSpotClient {
         busySlots.push(slot);
         
         if (Deno.env.get("DEBUG") === "true") {
-          console.log(`    - ${slot.start.toISOString()} ~ ${slot.end.toISOString()}`);
+          const startJST = slot.start.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+          const endJST = slot.end.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+          console.log(`    - UTC: ${slot.start.toISOString()} ~ ${slot.end.toISOString()}`);
+          console.log(`      JST: ${startJST} ~ ${endJST}`);
         }
       }
+    }
+    
+    return busySlots;
+  }
+  
+  private convertAvailabilitiesToBusySlots(
+    availableSlots: TimeSlot[],
+    startDate: Date,
+    endDate: Date
+  ): TimeSlot[] {
+    // 空き時間からbusySlotsを逆算
+    // これにより、他のロジックと互換性を保つ
+    const busySlots: TimeSlot[] = [];
+    let currentTime = new Date(startDate);
+    
+    // 空き時間を時間順にソート
+    const sortedAvailable = [...availableSlots].sort((a, b) => a.start.getTime() - b.start.getTime());
+    
+    for (const avail of sortedAvailable) {
+      // 現在時刻から空き時間の開始までがbusy
+      if (currentTime < avail.start) {
+        busySlots.push({
+          start: new Date(currentTime),
+          end: new Date(avail.start)
+        });
+      }
+      currentTime = new Date(avail.end);
+    }
+    
+    // 最後の空き時間から終了時刻までがbusy
+    if (currentTime < endDate) {
+      busySlots.push({
+        start: new Date(currentTime),
+        end: new Date(endDate)
+      });
     }
     
     return busySlots;
@@ -173,20 +248,25 @@ export class HubSpotClient {
     for (const person of hubspotPeople) {
       try {
         // Scheduler APIを使用（meetingLinkとして扱う）
+        // HUBSPOT_USE_AVAILABILITIES環境変数で切り替え
+        const useAvailabilities = Deno.env.get("HUBSPOT_USE_AVAILABILITIES") === "true";
         const busySlots = await this.getSchedulerAvailability(
           person.sourceId,
-          Deno.env.get("DEFAULT_TIMEZONE") || "Asia/Tokyo"
+          Deno.env.get("DEFAULT_TIMEZONE") || "Asia/Tokyo",
+          useAvailabilities
         );
         
-        // 期間でフィルタリング
-        const filteredSlots = busySlots.filter(
-          slot => slot.start >= startDate && slot.end <= endDate
-        );
+        // 期間でフィルタリング（UTCで比較）
+        const filteredSlots = busySlots.filter(slot => {
+          // startDateとendDateはJSTで指定されているが、DateオブジェクトはUTCで比較可能
+          return slot.start <= endDate && slot.end >= startDate;
+        });
         
         result.set(person.sourceId, filteredSlots);
         
         if (Deno.env.get("DEBUG") === "true") {
-          console.log(`\n${person.name}: ${filteredSlots.length}件の予定（フィルタ後）`);
+          console.log(`\n${person.name}: ${busySlots.length}件の予定を取得`);
+          console.log(`  期間内: ${filteredSlots.length}件の予定`);
         }
       } catch (error) {
         console.error(`${person.name}のHubSpot予定取得エラー:`, error);
