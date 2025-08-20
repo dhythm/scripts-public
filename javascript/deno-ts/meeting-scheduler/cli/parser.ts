@@ -15,7 +15,7 @@ export function parseCliArgs(args: string[]): CliOptions {
     showAll: false,
     limit: undefined,
     rawSlots: false,
-    minDuration: undefined,
+    minDuration: 30, // デフォルト30分
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -108,8 +108,8 @@ export function parseCliArgs(args: string[]): CliOptions {
       case "-m":
         if (i + 1 < args.length) {
           options.minDuration = parseInt(args[++i], 10);
-          if (options.minDuration <= 0) {
-            throw new Error("--min-duration は1以上の数値を指定してください");
+          if (options.minDuration < 0) {
+            throw new Error("--min-duration は0以上の数値を指定してください");
           }
         }
         break;
