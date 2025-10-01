@@ -182,6 +182,96 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
    - ノイズ除去 → ゲイン調整 → ノーマライズ → VAD
    - この順序で自動的に処理されます
 
+#### トラブルシューティング
+
+##### 問題: 文字起こし結果が意味不明・精度が極端に低い
+
+**考えられる原因:**
+- 元の音声ファイルの品質が極端に悪い
+- 音声が小さすぎる（ピークが-20 dBFS以下）
+- S/N比（信号対雑音比）が非常に悪い
+- 録音距離が遠すぎる
+
+**試すべき設定（優先順）:**
+
+1. **より大きいモデルを使用**
+   ```sh
+   # mediumモデルで精度向上
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --model medium \
+     --language ja
+   ```
+
+2. **VADを無効化して全体を処理**
+   ```sh
+   # VADによる音声の削減を防ぐ
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --model medium \
+     --language ja \
+     --no_vad_filter
+   ```
+
+3. **ノイズ除去を追加（弱め）**
+   ```sh
+   # ノイズ除去の強度を弱めに設定
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --model medium \
+     --language ja \
+     --denoise \
+     --normalize \
+     --noise_reduce_amount 0.3 \
+     --no_vad_filter
+   ```
+
+**重要な注意点:**
+- **元の音声品質が悪い場合、どの設定でも満足できる結果は得られません**
+- 人間が聞いても理解できないレベルの音声は、AIでも正確な文字起こしは不可能です
+- まず音声ファイルを実際に聞いて、人間が理解できるかを確認してください
+
+##### 問題: 文字数が少なすぎる（音声が削減されすぎる）
+
+**解決策:**
+
+1. **VAD閾値を下げる**
+   ```sh
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --normalize \
+     --vad_threshold 0.20
+   ```
+
+2. **VADを完全に無効化**
+   ```sh
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --normalize \
+     --no_vad_filter
+   ```
+
+##### 問題: ノイズを拾いすぎる（不要な音まで文字起こしされる）
+
+**解決策:**
+
+1. **VAD閾値を上げる**
+   ```sh
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --vad_threshold 0.40
+   ```
+
+2. **最小音声長を調整**
+   ```sh
+   uv run python transcribe_faster_whisper.py recording.m4a \
+     --vad_min_speech_duration 300
+   ```
+
+##### 録音品質の改善（今後のために）
+
+文字起こし精度を上げるには、**録音時の品質改善が最も重要**です：
+
+- **マイクと話者の距離**: 30cm以内が理想
+- **録音レベル**: ピークが-12 dBFS～-6 dBFS
+- **環境**: 静かな部屋（エアコン・ファンを止める）
+- **フォーマット**: 16-bit/48kHz以上
+- **マイク**: できれば外付けマイク、ピンマイクを使用
+
 #### 特徴
 
 - OpenAI Whisperより高速な処理
