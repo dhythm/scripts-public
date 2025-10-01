@@ -50,7 +50,7 @@ uv run python transcribe_whisper.py input.mp4 --output subtitles.srt --format sr
 
 CTranslate2ベースの高速実装を使用した音声文字起こしツールです。
 
-#### 使用方法
+#### 基本的な使用方法
 
 ```sh
 # 基本的な使用方法
@@ -69,13 +69,127 @@ uv run python transcribe_faster_whisper.py input.mp4 --format json --word_timest
 uv run python transcribe_faster_whisper.py input.mp3 --format vtt --output subtitles.vtt
 ```
 
+#### ユースケース別の使用方法
+
+##### 1. 音声が小さい・遠い場合
+
+```sh
+# ノーマライズを使用（音量を自動調整）
+uv run python transcribe_faster_whisper.py recording.m4a --normalize
+
+# ノーマライズ + VAD閾値を下げる（より敏感に）
+uv run python transcribe_faster_whisper.py recording.m4a --normalize --vad_threshold 0.25
+```
+
+##### 2. ノイズが多い環境の場合
+
+```sh
+# ノイズ除去 + ノーマライズ（推奨）
+uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --normalize --noise_reduce_amount 0.5
+
+# ノイズ除去の強度を調整（0.0-1.0、デフォルト0.8）
+uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_reduce_amount 0.6
+```
+
+##### 3. 音声が小さくノイズも多い場合
+
+```sh
+# ノイズ除去 + ノーマライズ + VAD調整の組み合わせ
+uv run python transcribe_faster_whisper.py difficult_audio.m4a \
+  --denoise \
+  --normalize \
+  --noise_reduce_amount 0.5 \
+  --vad_threshold 0.3
+```
+
+##### 4. 手動でゲインを調整したい場合
+
+```sh
+# +15dB のゲインを追加
+uv run python transcribe_faster_whisper.py quiet_audio.m4a --gain 15
+
+# ゲインを追加してから VAD 調整
+uv run python transcribe_faster_whisper.py quiet_audio.m4a --gain 12 --vad_threshold 0.25
+```
+
+##### 5. VADパラメータの細かい調整
+
+```sh
+# 短い発話も拾う（最小音声長を調整）
+uv run python transcribe_faster_whisper.py audio.m4a \
+  --vad_min_speech_duration 100 \
+  --vad_min_silence_duration 800
+
+# 音声の切れを防ぐ（パディングを増やす）
+uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
+```
+
+#### 主要オプション
+
+##### 音声前処理オプション
+
+| オプション | 説明 | デフォルト | 推奨値 |
+|-----------|------|-----------|--------|
+| `--normalize` | 音声をピークノーマライズ（-3.0 dBFS） | なし | 音声が小さい場合に推奨 |
+| `--gain` | ゲイン調整(dB)。正の値で音量アップ | 0 | 10-15 dB |
+| `--denoise` | ノイズ除去を適用 | なし | ノイズが多い場合に推奨 |
+| `--noise_reduce_amount` | ノイズ除去の強度（0.0-1.0） | 0.8 | 0.5-0.6（強すぎると音声劣化） |
+
+##### VAD（Voice Activity Detection）オプション
+
+| オプション | 説明 | デフォルト | 推奨値 |
+|-----------|------|-----------|--------|
+| `--vad_threshold` | VAD閾値（0-1）。低いほど敏感 | 0.30 | 0.25-0.35（小さい音声用） |
+| `--vad_min_speech_duration` | 最小音声長(ms) | 100 | 100-300 |
+| `--vad_min_silence_duration` | 最小無音長(ms) | 1000 | 800-1500 |
+| `--vad_speech_pad` | 音声の前後パディング(ms) | 400 | 400-600 |
+| `--no_vad_filter` | VADフィルタを無効化 | - | デバッグ時のみ |
+
+##### 出力オプション
+
+| オプション | 説明 |
+|-----------|------|
+| `--format` | 出力形式（text/json/srt/vtt） |
+| `--timestamps` | タイムスタンプを含める |
+| `--word_timestamps` | 単語レベルのタイムスタンプ |
+| `--confidence` | 信頼度情報を含める |
+
+##### モデル・処理オプション
+
+| オプション | 説明 | デフォルト |
+|-----------|------|-----------|
+| `--model` | モデルサイズ（tiny/base/small/medium/large-v3） | base |
+| `--language` | 言語コード（ja/en等） | 自動検出 |
+| `--device` | デバイス（cuda/cpu/auto） | auto |
+| `--beam_size` | ビームサーチの幅 | 5 |
+| `--initial_prompt` | 初期プロンプト（文脈を与える） | - |
+
+#### パラメータ調整のコツ
+
+1. **まず`--normalize`を試す**
+   - 音声が小さい場合の最も簡単な解決策
+   - ノイズも増幅されるので注意
+
+2. **ノイズが多い場合は`--denoise`**
+   - `--noise_reduce_amount 0.5`程度から始める
+   - 強すぎると音声の質が劣化するので注意
+
+3. **VAD閾値の調整**
+   - 音声が削減されすぎる場合：`--vad_threshold 0.25`
+   - ノイズを拾いすぎる場合：`--vad_threshold 0.35`
+
+4. **処理の順序**
+   - ノイズ除去 → ゲイン調整 → ノーマライズ → VAD
+   - この順序で自動的に処理されます
+
 #### 特徴
 
 - OpenAI Whisperより高速な処理
 - GPU/CPU自動選択
 - メモリ効率的な処理
 - 単語レベルのタイムスタンプ生成
-- Voice Activity Detection (VAD) フィルター
+- Voice Activity Detection (VAD) フィルター（小さい音声に最適化済み）
+- 音声前処理機能（ノーマライズ、ゲイン調整、ノイズ除去）
 - テキスト、JSON、SRT、WebVTT形式での出力
 - 信頼度情報の出力オプション
 

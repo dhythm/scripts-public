@@ -17,9 +17,16 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
 from faster_whisper import WhisperModel
 from pydub import AudioSegment
 from tqdm import tqdm
+
+try:
+    import noisereduce as nr
+    NOISEREDUCE_AVAILABLE = True
+except ImportError:
+    NOISEREDUCE_AVAILABLE = False
 
 
 class FasterWhisperTranscriber:
@@ -96,25 +103,142 @@ class FasterWhisperTranscriber:
         if file_size_mb > 1024:
             print(f"警告: ファイルサイズが大きいです ({file_size_mb:.1f} MB)。処理に時間がかかる可能性があります。")
     
-    def convert_to_wav_if_needed(self, file_path: Path) -> Path:
-        """必要に応じてWAV形式に変換"""
-        if file_path.suffix.lower() == '.wav':
+    def apply_noise_reduction(
+        self,
+        audio: AudioSegment,
+        reduce_amount: float = 0.8,
+        stationary: bool = False
+    ) -> AudioSegment:
+        """
+        ノイズ除去を適用
+
+        Args:
+            audio: AudioSegmentオブジェクト
+            reduce_amount: ノイズ除去の強度（0.0-1.0）。1.0が最大
+            stationary: 定常ノイズ（ファンの音など）の場合はTrue
+
+        Returns:
+            ノイズ除去後のAudioSegment
+        """
+        if not NOISEREDUCE_AVAILABLE:
+            print("警告: noisereduceがインストールされていません。ノイズ除去をスキップします。")
+            return audio
+
+        print(f"ノイズ除去を実行中... (強度: {reduce_amount:.1f}, 定常ノイズ: {stationary})")
+
+        # AudioSegmentをnumpy配列に変換
+        samples = np.array(audio.get_array_of_samples())
+
+        # ステレオの場合はモノラルに変換
+        if audio.channels == 2:
+            samples = samples.reshape((-1, 2))
+            samples = samples.mean(axis=1)
+
+        # float32に正規化
+        samples = samples.astype(np.float32)
+        if audio.sample_width == 2:  # 16-bit
+            samples = samples / 32768.0
+        elif audio.sample_width == 1:  # 8-bit
+            samples = samples / 128.0
+
+        # ノイズ除去を適用
+        # 最初の0.5秒をノイズサンプルとして使用
+        sample_rate = audio.frame_rate
+        noise_duration = min(0.5, len(samples) / sample_rate / 2)  # 最大0.5秒
+        noise_len = int(noise_duration * sample_rate)
+
+        if noise_len > 0:
+            y_noise = samples[:noise_len]
+            reduced = nr.reduce_noise(
+                y=samples,
+                sr=sample_rate,
+                y_noise=y_noise,
+                stationary=stationary,
+                prop_decrease=reduce_amount
+            )
+        else:
+            # ノイズサンプルなしで実行
+            reduced = nr.reduce_noise(
+                y=samples,
+                sr=sample_rate,
+                stationary=stationary,
+                prop_decrease=reduce_amount
+            )
+
+        # 16-bit intに戻す
+        reduced = (reduced * 32768.0).astype(np.int16)
+
+        # AudioSegmentに戻す
+        denoised_audio = AudioSegment(
+            reduced.tobytes(),
+            frame_rate=sample_rate,
+            sample_width=2,
+            channels=1
+        )
+
+        print("ノイズ除去が完了しました。")
+        return denoised_audio
+
+    def convert_to_wav_if_needed(
+        self,
+        file_path: Path,
+        normalize: bool = False,
+        gain_db: float = 0,
+        denoise: bool = False,
+        noise_reduce_amount: float = 0.8
+    ) -> Path:
+        """
+        必要に応じてWAV形式に変換し、音声を前処理
+
+        Args:
+            file_path: 音声ファイルのパス
+            normalize: ピークノーマライズを適用するか
+            gain_db: ゲイン調整(dB)。正の値で音量アップ、負の値で音量ダウン
+            denoise: ノイズ除去を適用するか
+            noise_reduce_amount: ノイズ除去の強度（0.0-1.0）
+
+        Returns:
+            変換後のWAVファイルのパス
+        """
+        # WAVファイルでも前処理が必要な場合は読み込む
+        needs_processing = normalize or gain_db != 0 or denoise
+        if file_path.suffix.lower() == '.wav' and not needs_processing:
             return file_path
-        
+
         print(f"音声ファイルをWAV形式に変換中...")
         audio = AudioSegment.from_file(str(file_path))
-        
+
+        # ノイズ除去（他の処理の前に実行）
+        if denoise:
+            audio = self.apply_noise_reduction(
+                audio,
+                reduce_amount=noise_reduce_amount,
+                stationary=False  # 非定常ノイズ対応
+            )
+
+        # ゲイン調整
+        if gain_db != 0:
+            print(f"ゲイン調整: {gain_db:+.1f} dB")
+            audio = audio + gain_db
+
+        # ノーマライズ（ピークを-3.0 dBFSに調整）
+        if normalize:
+            target_dBFS = -3.0
+            change_in_dBFS = target_dBFS - audio.dBFS
+            print(f"ノーマライズ: {change_in_dBFS:+.1f} dB (ピーク: {audio.dBFS:.1f} → {target_dBFS:.1f} dBFS)")
+            audio = audio.apply_gain(change_in_dBFS)
+
         # 16kHzにリサンプリング（Whisperの推奨）
         audio = audio.set_frame_rate(16000)
-        
+
         # 一時ファイルパスを作成
         wav_path = file_path.with_suffix('.wav')
         temp_wav_path = wav_path.parent / f"_temp_{wav_path.name}"
-        
+
         # WAV形式でエクスポート
         audio.export(str(temp_wav_path), format='wav')
         print("変換が完了しました。")
-        
+
         return temp_wav_path
     
     def transcribe(
@@ -133,11 +257,15 @@ class FasterWhisperTranscriber:
         initial_prompt: Optional[str] = None,
         word_timestamps: bool = False,
         vad_filter: bool = True,
-        vad_parameters: Optional[Dict] = None
+        vad_parameters: Optional[Dict] = None,
+        normalize: bool = False,
+        gain_db: float = 0,
+        denoise: bool = False,
+        noise_reduce_amount: float = 0.8
     ) -> Dict:
         """
         音声ファイルを文字起こし
-        
+
         Args:
             audio_path: 音声ファイルのパス
             language: 言語コード（例: 'ja', 'en'）。Noneの場合は自動検出
@@ -154,19 +282,39 @@ class FasterWhisperTranscriber:
             word_timestamps: 単語レベルのタイムスタンプを生成
             vad_filter: Voice Activity Detectionフィルタを使用
             vad_parameters: VADパラメータ
-        
+            normalize: 音声をピークノーマライズ
+            gain_db: ゲイン調整(dB)
+            denoise: ノイズ除去を適用
+            noise_reduce_amount: ノイズ除去の強度（0.0-1.0）
+
         Returns:
             文字起こし結果の辞書
         """
         audio_path = Path(audio_path)
         self.validate_audio_file(audio_path)
-        
+
+        # デフォルトVADパラメータ（小さい音声に最適化）
+        if vad_parameters is None and vad_filter:
+            vad_parameters = {
+                'threshold': 0.30,              # 小さい音声を検出（デフォルト0.5→0.3）
+                'min_speech_duration_ms': 100,  # 短い発話も保持（デフォルト0→100）
+                'min_silence_duration_ms': 1000,# 短い無音で分割しない（デフォルト2000→1000）
+                'speech_pad_ms': 400            # 音声の前後を保護（デフォルト400）
+            }
+            print(f"VADパラメータ（小さい音声用）: threshold={vad_parameters['threshold']}")
+
         # 一時ファイルパスを保持
         temp_file = None
-        
+
         try:
-            # 必要に応じてWAV形式に変換
-            wav_path = self.convert_to_wav_if_needed(audio_path)
+            # 必要に応じてWAV形式に変換（前処理を含む）
+            wav_path = self.convert_to_wav_if_needed(
+                audio_path,
+                normalize=normalize,
+                gain_db=gain_db,
+                denoise=denoise,
+                noise_reduce_amount=noise_reduce_amount
+            )
             if wav_path != audio_path:
                 temp_file = wav_path
             
@@ -495,27 +643,83 @@ def main():
         default=True,
         help='Voice Activity Detectionフィルタを使用 (default: True)'
     )
-    
+
     parser.add_argument(
         '--no_vad_filter',
         dest='vad_filter',
         action='store_false',
         help='Voice Activity Detectionフィルタを無効化'
     )
-    
+
+    parser.add_argument(
+        '--vad_threshold',
+        type=float,
+        help='VAD閾値（0-1）。低いほど敏感（小さい音声を検出）。指定しない場合は0.30'
+    )
+
+    parser.add_argument(
+        '--vad_min_speech_duration',
+        type=int,
+        help='最小音声長(ms)。これより短い音声は無視'
+    )
+
+    parser.add_argument(
+        '--vad_max_speech_duration',
+        type=float,
+        help='最大音声長(s)。これより長い場合は分割'
+    )
+
+    parser.add_argument(
+        '--vad_min_silence_duration',
+        type=int,
+        help='最小無音長(ms)。これより短い無音では分割しない'
+    )
+
+    parser.add_argument(
+        '--vad_speech_pad',
+        type=int,
+        help='音声の前後パディング(ms)。音声の切れを防ぐ'
+    )
+
+    parser.add_argument(
+        '--normalize',
+        action='store_true',
+        help='音声をピークノーマライズ（-3.0 dBFSに調整）'
+    )
+
+    parser.add_argument(
+        '--gain',
+        type=float,
+        default=0,
+        help='ゲイン調整(dB)。正の値で音量アップ、負の値で音量ダウン (default: 0)'
+    )
+
+    parser.add_argument(
+        '--denoise',
+        action='store_true',
+        help='ノイズ除去を適用（ノイズが多い環境で推奨）'
+    )
+
+    parser.add_argument(
+        '--noise_reduce_amount',
+        type=float,
+        default=0.8,
+        help='ノイズ除去の強度（0.0-1.0）。1.0が最大 (default: 0.8)'
+    )
+
     parser.add_argument(
         '--initial_prompt',
         type=str,
         help='文字起こしの初期プロンプト（文脈を与える）'
     )
-    
+
     parser.add_argument(
         '--cpu_threads',
         type=int,
         default=0,
         help='CPU使用時のスレッド数（0で自動）(default: 0)'
     )
-    
+
     parser.add_argument(
         '--num_workers',
         type=int,
@@ -546,7 +750,25 @@ def main():
         
         # 温度パラメータの処理
         temperature = args.temperature[0] if len(args.temperature) == 1 else args.temperature
-        
+
+        # VADパラメータの構築
+        vad_parameters = None
+        if args.vad_filter:
+            vad_parameters = {}
+            if args.vad_threshold is not None:
+                vad_parameters['threshold'] = args.vad_threshold
+            if args.vad_min_speech_duration is not None:
+                vad_parameters['min_speech_duration_ms'] = args.vad_min_speech_duration
+            if args.vad_max_speech_duration is not None:
+                vad_parameters['max_speech_duration_s'] = args.vad_max_speech_duration
+            if args.vad_min_silence_duration is not None:
+                vad_parameters['min_silence_duration_ms'] = args.vad_min_silence_duration
+            if args.vad_speech_pad is not None:
+                vad_parameters['speech_pad_ms'] = args.vad_speech_pad
+            # パラメータが何も指定されていない場合はNoneに戻す（デフォルト値を使用）
+            if not vad_parameters:
+                vad_parameters = None
+
         # 文字起こし実行
         result = transcriber.transcribe(
             args.audio_file,
@@ -556,7 +778,12 @@ def main():
             temperature=temperature,
             initial_prompt=args.initial_prompt,
             word_timestamps=args.word_timestamps,
-            vad_filter=args.vad_filter
+            vad_filter=args.vad_filter,
+            vad_parameters=vad_parameters,
+            normalize=args.normalize,
+            gain_db=args.gain,
+            denoise=args.denoise,
+            noise_reduce_amount=args.noise_reduce_amount
         )
         
         # 結果を保存
