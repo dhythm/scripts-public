@@ -708,6 +708,13 @@ def main():
     )
 
     parser.add_argument(
+        '--no_speech_threshold',
+        type=float,
+        default=0.6,
+        help='Whisper側の無音判定閾値。1.0に近づけると無音除外を緩和 (default: 0.6)'
+    )
+
+    parser.add_argument(
         '--initial_prompt',
         type=str,
         help='文字起こしの初期プロンプト（文脈を与える）'
@@ -783,7 +790,8 @@ def main():
             normalize=args.normalize,
             gain_db=args.gain,
             denoise=args.denoise,
-            noise_reduce_amount=args.noise_reduce_amount
+            noise_reduce_amount=args.noise_reduce_amount,
+            no_speech_threshold=args.no_speech_threshold
         )
         
         # 結果を保存
