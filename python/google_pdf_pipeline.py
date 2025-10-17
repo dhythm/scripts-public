@@ -10,9 +10,11 @@ import io
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
+from datetime import datetime
 
 import httpx
 import pdfplumber
@@ -497,8 +499,24 @@ async def async_main(args: argparse.Namespace) -> None:
     serialized = json.dumps(output_payload, ensure_ascii=False, indent=2)
 
     if args.output:
-        args.output.write_text(serialized, encoding="utf-8")
-        print(f"結果を {args.output} に保存しました。")
+        output_path = args.output.expanduser()
+        if output_path.exists() and output_path.is_dir():
+            safe_query = re.sub(r"[^\w.-]+", "_", args.query).strip("_") or "result"
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"{safe_query[:64]}_{timestamp}.json"
+            output_path = output_path / filename
+        elif output_path.suffix == "":
+            # 拡張子がない場合はディレクトリ指定とみなし、ファイル名を補完
+            output_path.mkdir(parents=True, exist_ok=True)
+            safe_query = re.sub(r"[^\w.-]+", "_", args.query).strip("_") or "result"
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"{safe_query[:64]}_{timestamp}.json"
+            output_path = output_path / filename
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        output_path.write_text(serialized, encoding="utf-8")
+        print(f"結果を {output_path} に保存しました。")
     else:
         print(serialized)
 
