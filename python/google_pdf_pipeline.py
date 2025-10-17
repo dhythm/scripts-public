@@ -16,6 +16,7 @@ from typing import Any, Iterable, Optional, Sequence
 import httpx
 import pdfplumber
 from openai import AsyncOpenAI
+from dotenv import load_dotenv
 from playwright.async_api import (
     Browser,
     BrowserContext,
@@ -483,6 +484,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
     parser = build_parser()
     args = parser.parse_args(argv)
     asyncio.run(async_main(args))

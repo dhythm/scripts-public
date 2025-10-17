@@ -21,6 +21,8 @@ Google検索APIとPlaywrightを組み合わせ、PDFの取得から文字抽出�
 - `GOOGLE_CSE_ID` (または `GOOGLE_CUSTOM_SEARCH_ID`)
 - `OPENAI_API_KEY`（LLM整形を行う場合）
 
+`python/.env.example` を `python/.env` にコピーし、値を設定してください（ファイルはリポジトリ直下ではなく `python/` ディレクトリ内に配置しています）。
+
 ### 実行例
 
 ```sh
