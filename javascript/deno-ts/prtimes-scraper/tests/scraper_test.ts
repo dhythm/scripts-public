@@ -1,6 +1,6 @@
 import { assertEquals, assertExists } from "jsr:@std/assert";
 import { describe, it } from "jsr:@std/testing/bdd";
-import { scrapeReleases, parseHtml } from "../src/scraper.ts";
+import { scrapeReleases, parseHtml, fetchCompanyInfo } from "../src/scraper.ts";
 import type { PrTimesRelease } from "../src/types.ts";
 
 describe("PRTIMESスクレイパー", () => {
@@ -94,6 +94,23 @@ describe("PRTIMESスクレイパー", () => {
         assertEquals(typeof release.company, "string");
         assertEquals(typeof release.url, "string");
         assertEquals(typeof release.date, "string");
+      }
+    });
+  });
+
+  describe("fetchCompanyInfo", () => {
+    it("企業ページから企業情報を取得できる", async () => {
+      // 実際の企業ID（株式会社リブレ）でテスト
+      const companyId = "22435";
+      const companyInfo = await fetchCompanyInfo(companyId);
+
+      assertExists(companyInfo);
+
+      // URLが取得できることを確認
+      if (companyInfo.url) {
+        assertEquals(typeof companyInfo.url, "string");
+        // URLの形式を確認
+        assertEquals(companyInfo.url.startsWith("http"), true);
       }
     });
   });
