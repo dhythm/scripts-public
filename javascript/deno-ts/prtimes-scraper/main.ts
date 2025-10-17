@@ -40,7 +40,7 @@ async function main() {
       console.log("PRTIMESの新着リリースを取得中...");
     }
 
-    const releases = await scrapeReleases();
+    const releases = await scrapeReleases({ verbose: options.verbose });
 
     if (options.verbose) {
       console.log(`${releases.length}件のリリースを取得しました`);
@@ -58,10 +58,20 @@ async function main() {
           try {
             const companyInfo = await fetchCompanyInfo(release.companyId);
             releases[i].companyUrl = companyInfo.url;
+            releases[i].companyInfo = companyInfo;
 
             if (options.verbose) {
+              const socials = [
+                companyInfo.xUrl ? `X: ${companyInfo.xUrl}` : undefined,
+                companyInfo.facebookUrl ? `Facebook: ${companyInfo.facebookUrl}` : undefined,
+                companyInfo.youtubeUrl ? `YouTube: ${companyInfo.youtubeUrl}` : undefined,
+              ]
+                .filter((value): value is string => Boolean(value))
+                .join(" / ");
+
+              const baseInfo = companyInfo.url || "URL不明";
               console.log(
-                `[${i + 1}/${releases.length}] ${release.company}: ${companyInfo.url || "URL不明"}`
+                `[${i + 1}/${releases.length}] ${release.company}: ${baseInfo}${socials ? ` | ${socials}` : ""}`
               );
             }
           } catch (error) {
@@ -104,7 +114,7 @@ function printHelp() {
 PRTIMESスクレイパー - PRTIMESの新着リリースを取得します
 
 使い方:
-  deno run --allow-net --allow-write --allow-env main.ts [オプション]
+  deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-ffi --allow-sys main.ts [オプション]
 
 オプション:
   -o, --output <path>      出力ファイルのパス (デフォルト: prtimes_releases.json)
@@ -114,16 +124,16 @@ PRTIMESスクレイパー - PRTIMESの新着リリースを取得します
 
 例:
   # デフォルト設定で実行
-  deno run --allow-net --allow-write --allow-env main.ts
+  deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-ffi --allow-sys main.ts
 
   # 出力ファイル名を指定
-  deno run --allow-net --allow-write --allow-env main.ts -o output.json
+  deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-ffi --allow-sys main.ts -o output.json
 
   # 詳細ログを表示
-  deno run --allow-net --allow-write --allow-env main.ts -v
+  deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-ffi --allow-sys main.ts -v
 
   # 企業情報も取得（時間がかかります）
-  deno run --allow-net --allow-write --allow-env main.ts -c -v
+  deno run --allow-net --allow-read --allow-write --allow-env --allow-run --allow-ffi --allow-sys main.ts -c -v
   `);
 }
 

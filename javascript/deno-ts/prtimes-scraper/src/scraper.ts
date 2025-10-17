@@ -1,7 +1,57 @@
+import { chromium } from "npm:playwright";
 import * as cheerio from "npm:cheerio@1.0.0";
-import type { PrTimesRelease, CompanyInfo } from "./types.ts";
+import type { CompanyInfo, PrTimesRelease } from "./types.ts";
 
-const TARGET_URL = "https://prtimes.jp/main/html/newarrival";
+const BASE_URL = "https://prtimes.jp";
+const TARGET_URL = `${BASE_URL}/main/html/newarrival`;
+const COMPANY_API_URL = `${BASE_URL}/api/companies`;
+
+const DEFAULT_MAX_LOAD_MORE = 10;
+const DEFAULT_WAIT_AFTER_CLICK_MS = 800;
+
+export type ReleaseScrapeOptions = {
+  /** 「もっと見る」ボタンをクリックする最大回数 */
+  maxLoadMore?: number;
+  /** クリック後に待機する時間（ms） */
+  waitAfterClickMs?: number;
+  /** ログ出力を行うか */
+  verbose?: boolean;
+};
+
+type CompanyApiResponse = {
+  url?: string | null;
+  industry_kbn_name?: string | null;
+  address?: string | null;
+  address_2?: string | null;
+  capital?: string | null;
+  phone?: string | null;
+  foundation_date?: { year?: string | null; month?: string | null } | null;
+  president_name?: string | null;
+  description?: string | null;
+  twitter_screen_name?: string | null;
+  facebook_page_url?: string | null;
+  youtube_channel_url?: string | null;
+  follower_num?: number | null;
+  og_image_url?: string | null;
+  cover_image_url?: string | { pc?: string | null; sp?: string | null } | null;
+  logo_image_url?: string | { pc?: string | null; sp?: string | null } | null;
+};
+
+const isCompanyApiResponse = (value: unknown): value is CompanyApiResponse => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return !Object.prototype.hasOwnProperty.call(value, "status");
+};
+
+const toAbsoluteUrl = (href?: string | null): string | undefined => {
+  if (!href) return undefined;
+  try {
+    return new URL(href, BASE_URL).toString();
+  } catch {
+    return href ?? undefined;
+  }
+};
 
 /**
  * HTMLをパースしてリリース情報を抽出する
@@ -11,31 +61,59 @@ const TARGET_URL = "https://prtimes.jp/main/html/newarrival";
 export function parseHtml(html: string): PrTimesRelease[] {
   const $ = cheerio.load(html);
 
-  const items = $(".list-article")
+  return $("article.list-article")
     .map((_, el) => {
-      const title = $(el).find(".list-article__title").text().trim();
-      const href = $(el).find(".list-article__link").attr("href");
-      const url = href ? `https://prtimes.jp${href}` : "";
+      const $el = $(el);
 
-      // 企業名はリンク付きのものを取得（dummyではない方）
-      const companyLink = $(el).find(".list-article__company-name-link");
-      const company = companyLink.length > 0
-        ? companyLink.text().trim()
-        : $(el).find(".list-article__company-name").first().text().trim();
+      const linkHref = $el.find(".list-article__link").attr("href");
+      const url = toAbsoluteUrl(linkHref) ?? "";
+      const title = $el.find(".list-article__title").text().trim();
 
-      // 企業IDを取得（企業ページのURLから）
+      const companyLink = $el.find(".list-article__company-name-link").first();
+      const companyText = companyLink.text().trim();
+      const fallbackCompany = $el
+        .find(".list-article__company-name, .list-article__company-name--dummy")
+        .first()
+        .text()
+        .trim();
+      const company = companyText || fallbackCompany;
+
       const companyHref = companyLink.attr("href");
       const companyIdMatch = companyHref?.match(/company_id\/(\d+)/);
       const companyId = companyIdMatch ? companyIdMatch[1] : undefined;
 
-      const timeElement = $(el).find(".list-article__time");
-      const date = timeElement.attr("datetime") || timeElement.text().trim();
+      const timeElement = $el.find(".list-article__time").first();
+      const date = timeElement.attr("datetime")?.trim() || timeElement.text().trim();
+      const relativeTime = timeElement.text().trim() || undefined;
 
-      return { title, company, url, date, companyId };
+      const imageEl = $el.find(".list-article__image-img").first();
+      const imageSrc = imageEl.attr("data-src") ?? imageEl.attr("src");
+      const thumbnailUrl = toAbsoluteUrl(imageSrc);
+      const thumbnailAlt = imageEl.attr("alt")?.trim();
+
+      const releaseIdMatch = linkHref?.match(/\/p\/([^/.]+(?:\.[^/.]+)?)\.html/i);
+      const releaseId = releaseIdMatch ? releaseIdMatch[1] : undefined;
+
+      const tags = $el
+        .find(".list-article__tag, .list-article__label")
+        .map((__, tagEl) => $(tagEl).text().trim())
+        .get()
+        .filter((tag) => tag.length > 0);
+
+      return {
+        title,
+        company,
+        url,
+        date,
+        relativeTime,
+        companyId,
+        releaseId,
+        thumbnailUrl,
+        thumbnailAlt,
+        tags: tags.length > 0 ? Array.from(new Set(tags)) : undefined,
+      };
     })
     .get();
-
-  return items;
 }
 
 /**
@@ -43,77 +121,144 @@ export function parseHtml(html: string): PrTimesRelease[] {
  * @returns リリース情報の配列
  * @throws ネットワークエラーやパースエラーが発生した場合
  */
-export async function scrapeReleases(): Promise<PrTimesRelease[]> {
-  try {
-    const response = await fetch(TARGET_URL);
+export async function scrapeReleases(
+  options: ReleaseScrapeOptions = {}
+): Promise<PrTimesRelease[]> {
+  const {
+    maxLoadMore = DEFAULT_MAX_LOAD_MORE,
+    waitAfterClickMs = DEFAULT_WAIT_AFTER_CLICK_MS,
+    verbose = false,
+  } = options;
 
-    if (!response.ok) {
-      throw new Error(
-        `HTTPエラー: ${response.status} ${response.statusText}`
-      );
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForSelector("article.list-article", { timeout: 60_000 });
+
+    let iteration = 0;
+    while (iteration < maxLoadMore) {
+      const loadMoreButton = await page.$(".js-new-arrival-list-article-more-button.active");
+      if (!loadMoreButton) {
+        if (verbose) {
+          console.log("「もっと見る」ボタンが見つからなかったため読み込みを終了します。");
+        }
+        break;
+      }
+
+      const previousCount = await page.locator("article.list-article").count();
+      if (verbose) {
+        console.log(`もっと見るをクリック (${iteration + 1}回目)。取得済み: ${previousCount}件`);
+      }
+
+      await loadMoreButton.click({ delay: 50 });
+
+      let currentCount = previousCount;
+      for (let retry = 0; retry < 20; retry++) {
+        await page.waitForTimeout(250);
+        currentCount = await page.locator("article.list-article").count();
+        if (currentCount > previousCount) {
+          break;
+        }
+      }
+
+      await page.waitForTimeout(waitAfterClickMs);
+
+      if (verbose) {
+        console.log(`現在の件数: ${currentCount}件`);
+      }
+
+      iteration += 1;
+
+      if (currentCount <= previousCount) {
+        if (verbose) {
+          console.log("件数が増加しなかったため追加読み込みを終了します。");
+        }
+        break;
+      }
     }
 
-    const html = await response.text();
+    const html = await page.content();
     return parseHtml(html);
   } catch (error) {
     if (error instanceof Error) {
       throw new Error(`スクレイピングに失敗しました: ${error.message}`);
     }
     throw error;
+  } finally {
+    await page.close().catch(() => {});
+    await browser.close().catch(() => {});
   }
 }
 
 /**
- * 企業ページから企業情報を取得する
+ * 企業APIから企業情報を取得する
  * @param companyId 企業ID
  * @returns 企業情報
  */
-export async function fetchCompanyInfo(
-  companyId: string
-): Promise<CompanyInfo> {
-  const companyUrl = `https://prtimes.jp/main/html/searchrlp/company_id/${companyId}`;
+export async function fetchCompanyInfo(companyId: string): Promise<CompanyInfo> {
+  const apiUrl = `${COMPANY_API_URL}/${companyId}`;
 
   try {
-    const response = await fetch(companyUrl);
+    const response = await fetch(apiUrl, {
+      headers: { accept: "application/json" },
+    });
 
     if (!response.ok) {
-      throw new Error(
-        `HTTPエラー: ${response.status} ${response.statusText}`
-      );
+      throw new Error(`HTTPエラー: ${response.status} ${response.statusText}`);
     }
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
+    const raw = await response.json();
+    if (!isCompanyApiResponse(raw)) {
+      throw new Error(`APIエラー: ${JSON.stringify(raw)}`);
+    }
+    const data = raw;
 
-    // 企業情報セクションから情報を抽出
-    const info: CompanyInfo = {};
+    const info: CompanyInfo = {
+      url: data.url ?? undefined,
+      industry: data.industry_kbn_name ?? undefined,
+      address: data.address ?? undefined,
+      address2: data.address_2 ?? undefined,
+      capital: data.capital ?? undefined,
+      phone: data.phone ?? undefined,
+      representative: data.president_name ?? undefined,
+      description: data.description ?? undefined,
+      followerCount: typeof data.follower_num === "number" ? data.follower_num : undefined,
+      ogImageUrl: toAbsoluteUrl(
+        typeof data.og_image_url === "string" ? data.og_image_url : undefined,
+      ),
+      coverImageUrl: toAbsoluteUrl(
+        typeof data.cover_image_url === "string" ? data.cover_image_url : data.cover_image_url?.pc,
+      ),
+      logoImageUrl: toAbsoluteUrl(
+        typeof data.logo_image_url === "string" ? data.logo_image_url : data.logo_image_url?.pc,
+      ),
+    };
 
-    // 基本情報テーブルから情報を抽出
-    $(".company-information__table-row").each((_, row) => {
-      const $row = $(row);
-      const label = $row.find(".company-information__label").text().trim();
-      const value = $row.find(".company-information__value");
+    const foundationYear = data.foundation_date?.year ?? undefined;
+    const foundationMonth = data.foundation_date?.month ?? undefined;
+    if (foundationYear) {
+      info.foundationDate = foundationMonth
+        ? `${foundationYear}-${foundationMonth.toString().padStart(2, "0")}`
+        : foundationYear;
+    }
 
-      if (label === "URL") {
-        const urlLink = value.find("a").attr("href");
-        if (urlLink) {
-          info.url = urlLink;
-        }
-      } else if (label === "業種") {
-        info.industry = value.text().trim();
-      } else if (label === "本社所在地") {
-        info.address = value.text().trim();
-      } else if (label === "資本金") {
-        info.capital = value.text().trim();
-      }
-    });
+    const twitterId = data.twitter_screen_name?.replace(/^@/, "");
+    if (twitterId) {
+      info.xUrl = `https://x.com/${twitterId}`;
+    }
+    if (data.facebook_page_url) {
+      info.facebookUrl = data.facebook_page_url;
+    }
+    if (data.youtube_channel_url) {
+      info.youtubeUrl = data.youtube_channel_url;
+    }
 
     return info;
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(
-        `企業情報の取得に失敗しました (ID: ${companyId}): ${error.message}`
-      );
+      throw new Error(`企業情報の取得に失敗しました (ID: ${companyId}): ${error.message}`);
     }
     throw error;
   }
@@ -126,7 +271,7 @@ export async function fetchCompanyInfo(
  */
 export async function saveToFile(
   releases: PrTimesRelease[],
-  outputPath: string
+  outputPath: string,
 ): Promise<void> {
   try {
     const jsonContent = JSON.stringify(releases, null, 2);

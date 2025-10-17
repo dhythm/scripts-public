@@ -79,7 +79,7 @@ describe("PRTIMESスクレイパー", () => {
     it("型定義に従ったデータ構造を返す", async () => {
       // 注: このテストは実際のネットワークアクセスを伴うため、
       // 必要に応じてモックを使用することを検討してください
-      const releases = await scrapeReleases();
+      const releases = await scrapeReleases({ maxLoadMore: 0 });
 
       assertExists(releases);
       assertEquals(Array.isArray(releases), true);
@@ -94,6 +94,9 @@ describe("PRTIMESスクレイパー", () => {
         assertEquals(typeof release.company, "string");
         assertEquals(typeof release.url, "string");
         assertEquals(typeof release.date, "string");
+        if (release.thumbnailUrl) {
+          assertEquals(release.thumbnailUrl.startsWith("http"), true);
+        }
       }
     });
   });
@@ -106,12 +109,17 @@ describe("PRTIMESスクレイパー", () => {
 
       assertExists(companyInfo);
 
-      // URLが取得できることを確認
-      if (companyInfo.url) {
-        assertEquals(typeof companyInfo.url, "string");
-        // URLの形式を確認
-        assertEquals(companyInfo.url.startsWith("http"), true);
-      }
+      const candidates = [
+        companyInfo.url,
+        companyInfo.xUrl,
+        companyInfo.facebookUrl,
+        companyInfo.youtubeUrl,
+      ].filter((item): item is string => Boolean(item));
+
+      candidates.forEach((value) => {
+        assertEquals(typeof value, "string");
+        assertEquals(value.startsWith("http"), true);
+      });
     });
   });
 });
