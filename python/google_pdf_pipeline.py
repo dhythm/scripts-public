@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -22,6 +23,7 @@ from playwright.async_api import (
     BrowserContext,
     Page,
     TimeoutError as PlaywrightTimeoutError,
+    Error as PlaywrightError,
     async_playwright,
 )
 
@@ -143,24 +145,41 @@ class PlaywrightPdfFetcher:
             raise RuntimeError("PlaywrightPdfFetcherはコンテキストマネージャとして使用してください。")
 
         page: Page = await self._context.new_page()
+        download_task: Optional[asyncio.Task] = None
         try:
-            response = await page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+            download_task = asyncio.create_task(
+                page.wait_for_event("download", timeout=self.timeout_ms)
+            )
+            try:
+                response = await page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+            except PlaywrightError as error:
+                if "download is starting" in str(error).lower():
+                    response = None
+                else:
+                    raise
+
             if response:
                 body = await response.body()
                 content_type = (response.headers.get("content-type") or "").lower()
                 if "pdf" in content_type or body.startswith(b"%PDF"):
                     return body
 
-            try:
-                download = await page.wait_for_event("download", timeout=self.timeout_ms)
-                temp_path = await download.path()
-                if temp_path:
-                    return Path(temp_path).read_bytes()
-            except PlaywrightTimeoutError:
-                pass
+            if download_task:
+                try:
+                    download = await download_task
+                except (PlaywrightTimeoutError, asyncio.CancelledError):
+                    download = None
+                else:
+                    temp_path = await download.path()
+                    if temp_path:
+                        return Path(temp_path).read_bytes()
 
             raise RuntimeError("PDFのダウンロードに失敗しました。")
         finally:
+            if download_task and not download_task.done():
+                download_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, PlaywrightTimeoutError):
+                    await download_task
             await page.close()
 
 
@@ -225,7 +244,6 @@ class LlmFormatter:
         *,
         api_key: Optional[str] = None,
         model: str = "gpt-4o-mini",
-        temperature: float = 0.2,
         system_prompt: Optional[str] = None,
     ) -> None:
         key = api_key or os.getenv("OPENAI_API_KEY")
@@ -233,7 +251,6 @@ class LlmFormatter:
             raise ValueError("OpenAI APIキーが設定されていません。環境変数 OPENAI_API_KEY を設定してください。")
         self.client = AsyncOpenAI(api_key=key)
         self.model = model
-        self.temperature = temperature
         self.system_prompt = (
             system_prompt
             or "あなたはPDFから抽出されたテキストを整形し、読みやすい日本語の要約と重要ポイントを提供するアシスタントです。"
@@ -248,10 +265,6 @@ class LlmFormatter:
     ) -> str:
         if not text.strip():
             return ""
-
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": self.system_prompt},
-        ]
 
         user_content_lines = [
             "以下のPDFテキストを簡潔に整形してください。",
@@ -270,16 +283,32 @@ class LlmFormatter:
         user_content_lines.append("=== PDFテキスト ===")
         user_content_lines.append(text.strip())
 
-        messages.append({"role": "user", "content": "\n".join(user_content_lines)})
-
-        response = await self.client.chat.completions.create(
+        prompt = "\n".join(user_content_lines)
+        response = await self.client.responses.create(
             model=self.model,
-            messages=messages,
-            temperature=self.temperature,
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": self.system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
+            ],
         )
 
-        choice = response.choices[0]
-        return choice.message.content or ""
+        aggregate = getattr(response, "output_text", None)
+        if aggregate:
+            return aggregate
+
+        texts: list[str] = []
+        for item in getattr(response, "output", []) or []:
+            for block in getattr(item, "content", []) or []:
+                text = getattr(block, "text", None)
+                if text:
+                    texts.append(text)
+        return "\n".join(texts)
 
 
 class GooglePdfProcessor:
@@ -386,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        default=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
         help="使用するOpenAIモデル（LLM整形を行う場合）。",
     )
     parser.add_argument(
