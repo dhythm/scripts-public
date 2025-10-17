@@ -66,21 +66,12 @@ class GooglePdfSearcher:
         default_language: Optional[str] = "lang_ja",
         safe: str = "off",
     ) -> None:
-        self.api_key = (
-            api_key
-            or os.getenv("GOOGLE_SEARCH_API_KEY")
-            or os.getenv("GOOGLE_API_KEY")
-        )
-        self.search_engine_id = (
-            search_engine_id
-            or os.getenv("GOOGLE_CSE_ID")
-            or os.getenv("GOOGLE_CUSTOM_SEARCH_ID")
-        )
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.search_engine_id = search_engine_id or os.getenv("GOOGLE_CSE_ID")
         if not self.api_key or not self.search_engine_id:
             raise ValueError(
                 "Google検索APIキーと検索エンジンIDが設定されていません。"
-                "環境変数 GOOGLE_SEARCH_API_KEY (または GOOGLE_API_KEY) と "
-                "GOOGLE_CSE_ID (または GOOGLE_CUSTOM_SEARCH_ID) を設定してください。"
+                "環境変数 GOOGLE_API_KEY と GOOGLE_CSE_ID を設定してください。"
             )
         self.timeout = timeout
         self.default_language = default_language
