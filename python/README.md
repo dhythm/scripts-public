@@ -11,6 +11,29 @@ uv add ruff
 uv run ruff check
 ```
 
+## Google PDF パイプライン
+
+Google検索APIとPlaywrightを組み合わせ、PDFの取得から文字抽出・LLM整形までを自動化するスクリプト `google_pdf_pipeline.py` を追加しました。
+
+### 必要な環境変数
+
+- `GOOGLE_SEARCH_API_KEY` (または `GOOGLE_API_KEY`)
+- `GOOGLE_CSE_ID` (または `GOOGLE_CUSTOM_SEARCH_ID`)
+- `OPENAI_API_KEY`（LLM整形を行う場合）
+
+### 実行例
+
+```sh
+# Google検索で上位1件のPDFを処理し、そのまま標準出力にJSONで表示
+uv run python google_pdf_pipeline.py "site:prtimes.jp プレスリリース PDF" -n 1
+
+# OCRフォールバックを無効化し、結果をファイルに保存
+uv run python google_pdf_pipeline.py "教育委員会 PDF 報告書" -n 2 --disable-ocr --output results.json
+
+# 追加の整形指示を与えてLLMに要約させる
+uv run python google_pdf_pipeline.py "サステナビリティ レポート PDF" --prompt "要約の最後に推奨アクションを2つ挙げてください。"
+```
+
 ## 音声文字起こしツール
 
 音声ファイルからテキストを抽出する2つのツールを提供しています。
