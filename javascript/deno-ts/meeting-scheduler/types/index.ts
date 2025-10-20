@@ -44,6 +44,7 @@ export interface CliOptions {
   limit?: number; // 表示する候補数の上限
   rawSlots: boolean; // 連続した空き時間ブロックを表示
   minDuration?: number; // 最小会議時間（分）
+  textNoIndex?: boolean; // テキスト出力で番号を表示しない
 }
 
 export interface GoogleCalendarConfig {

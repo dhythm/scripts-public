@@ -248,35 +248,34 @@ function outputResults(
       break;
 
     case "text":
-    default:
+    default: {
       console.log("\n=== 会議候補時間 ===");
       console.log(`合計 ${candidates.length} 件の候補が見つかりました。\n`);
-      
+
       const displayCount2 = Math.min(limit, candidates.length);
       if (showAll) {
         console.log(`全ての空き時間（${displayCount2}件）:\n`);
       } else {
         console.log(`おすすめトップ${displayCount2}:\n`);
       }
-      
-      candidates.slice(0, limit).forEach((candidate, index) => {
+
+      const displayed = candidates.slice(0, limit);
+
+      displayed.forEach((candidate, index) => {
         const duration = Math.round((candidate.slot.end.getTime() - candidate.slot.start.getTime()) / 60000);
         const startStr = formatDateTimeWithDay(candidate.slot.start);
-        const endStr = isSameDay(candidate.slot.start, candidate.slot.end) 
+        const endStr = isSameDay(candidate.slot.start, candidate.slot.end)
           ? formatTimeOnly(candidate.slot.end)
           : formatDateTimeWithDay(candidate.slot.end);
-        console.log(`${index + 1}. ${startStr} - ${endStr} （${duration}分）`);
-        if (candidate.reasons.length > 0) {
-          console.log(`   理由: ${candidate.reasons.join(", ")} | スコア: ${candidate.score}/100`);
-        } else {
-          console.log(`   スコア: ${candidate.score}/100`);
-        }
+        const prefix = options.textNoIndex ? "" : `${index + 1}. `;
+        console.log(`${prefix}${startStr} - ${endStr} （${duration}分）`);
       });
-      
+
       if (candidates.length > limit && !showAll) {
-        console.log(`\n他 ${candidates.length - limit} 件の候補があります。全て表示するには --show-all オプションを使用してください。`);
+        console.log(`他 ${candidates.length - limit} 件の候補があります。全て表示するには --show-all オプションを使用してください。`);
       }
       break;
+    }
   }
 }
 
@@ -319,20 +318,22 @@ function outputRawSlots(
       break;
 
     case "text":
-    default:
+    default: {
       console.log("\n=== 空き時間ブロック ===");
       console.log(`合計 ${slots.length} 件の連続した空き時間が見つかりました。\n`);
       console.log("利用可能な時間帯:\n");
-      
+
       slots.forEach((slot, index) => {
         const duration = Math.round((slot.end.getTime() - slot.start.getTime()) / 60000);
         const startStr = formatDateTimeWithDay(slot.start);
-        const endStr = isSameDay(slot.start, slot.end) 
+        const endStr = isSameDay(slot.start, slot.end)
           ? formatTimeOnly(slot.end)
           : formatDateTimeWithDay(slot.end);
-        console.log(`${index + 1}. ${startStr} - ${endStr} （${duration}分）`);
+        const prefix = options.textNoIndex ? "" : `${index + 1}. `;
+        console.log(`${prefix}${startStr} - ${endStr} （${duration}分）`);
       });
       break;
+    }
   }
 }
 
