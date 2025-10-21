@@ -16,7 +16,8 @@ export function parseCliArgs(args: string[]): CliOptions {
     limit: undefined,
     rawSlots: false,
     minDuration: 30, // デフォルト30分
-    textNoIndex: false,
+    textNoIndex: true,
+    skipHolidays: true,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -107,6 +108,14 @@ export function parseCliArgs(args: string[]): CliOptions {
 
       case "--text-no-index":
         options.textNoIndex = true;
+        break;
+
+      case "--show-index":
+        options.textNoIndex = false;
+        break;
+
+      case "--include-holidays":
+        options.skipHolidays = false;
         break;
 
       case "--min-duration":
@@ -235,7 +244,9 @@ function printHelp(): void {
   --show-all                 全ての空き時間候補を表示
   --limit <数>               表示する候補数の上限（デフォルト: 5）
   --raw-slots                連続した空き時間ブロックを表示（例: 10:00-15:00）
-  --text-no-index            テキスト出力で先頭の番号を非表示
+  --text-no-index            テキスト出力で先頭の番号を非表示（デフォルト）
+  --show-index               テキスト出力で先頭の番号を表示
+  --include-holidays         日本の祝日を含める（デフォルトは除外）
   -v, --verbose              詳細ログを表示
   -h, --help                 このヘルプを表示
 

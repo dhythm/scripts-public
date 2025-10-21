@@ -1,5 +1,11 @@
 import { TimeSlot } from "../types/index.ts";
 
+const HOLIDAY_API_URL = "https://holidays-jp.github.io/api/v1/date.json";
+const JST_TIMEZONE = "Asia/Tokyo";
+
+let japaneseHolidayCache: Map<string, string> | null = null;
+let holidayFetchPromise: Promise<Map<string, string>> | null = null;
+
 export function parseDateTime(dateStr: string): Date {
   const date = new Date(dateStr);
   if (isNaN(date.getTime())) {
@@ -42,6 +48,82 @@ export function formatTimeOnly(date: Date, timezone = "Asia/Tokyo"): string {
   });
 }
 
+function toJstDateKey(date: Date): string {
+  const [year, month, day] = date
+    .toLocaleDateString("ja-JP", {
+      timeZone: JST_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+    .split("/");
+  return `${year}-${month}-${day}`;
+}
+
+async function ensureHolidayCache(): Promise<Map<string, string>> {
+  if (japaneseHolidayCache) {
+    return japaneseHolidayCache;
+  }
+
+  if (!holidayFetchPromise) {
+    holidayFetchPromise = (async () => {
+      try {
+        const response = await fetch(HOLIDAY_API_URL);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = (await response.json()) as Record<string, string>;
+        japaneseHolidayCache = new Map(Object.entries(data));
+      } catch (error) {
+        console.warn("祝日データの取得に失敗しました。祝日除外をスキップします。", error);
+        japaneseHolidayCache = new Map();
+      }
+      return japaneseHolidayCache!;
+    })();
+  }
+
+  return holidayFetchPromise;
+}
+
+function createHolidaySlot(dateKey: string): TimeSlot {
+  const start = new Date(`${dateKey}T00:00:00+09:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+export async function loadJapaneseHolidays(
+  start: Date,
+  end: Date
+): Promise<Set<string>> {
+  const cache = await ensureHolidayCache();
+  if (!cache || cache.size === 0) {
+    return new Set();
+  }
+
+  const startKey = toJstDateKey(start);
+  const endKey = toJstDateKey(end);
+  const result = new Set<string>();
+
+  for (const dateKey of cache.keys()) {
+    if (dateKey >= startKey && dateKey <= endKey) {
+      result.add(dateKey);
+    }
+  }
+
+  return result;
+}
+
+export function isJapaneseHoliday(
+  date: Date,
+  holidays?: Set<string>
+): boolean {
+  if (!holidays || holidays.size === 0) {
+    return false;
+  }
+  return holidays.has(toJstDateKey(date));
+}
+
 export function isSameDay(date1: Date, date2: Date): boolean {
   return date1.getFullYear() === date2.getFullYear() &&
          date1.getMonth() === date2.getMonth() &&
@@ -52,19 +134,33 @@ export function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
-export function isBusinessHours(date: Date): boolean {
+export function isBusinessHours(
+  date: Date,
+  holidays?: Set<string>,
+  skipHolidays = false
+): boolean {
   const hours = date.getHours();
   const day = date.getDay();
-  
+
+  if (day === 0 || day === 6) {
+    return false;
+  }
+
+  if (skipHolidays && isJapaneseHoliday(date, holidays)) {
+    return false;
+  }
+
   // 平日の9時から18時
-  return day >= 1 && day <= 5 && hours >= 9 && hours < 18;
+  return hours >= 9 && hours < 18;
 }
 
 export function generateTimeSlots(
   start: Date,
   end: Date,
   durationMinutes: number,
-  businessHoursOnly = false
+  businessHoursOnly = false,
+  skipHolidays = false,
+  holidays?: Set<string>
 ): TimeSlot[] {
   const slots: TimeSlot[] = [];
   let current = new Date(start);
@@ -73,7 +169,14 @@ export function generateTimeSlots(
     const slotEnd = addMinutes(current, durationMinutes);
     
     if (slotEnd <= end) {
-      if (!businessHoursOnly || (isBusinessHours(current) && isBusinessHours(slotEnd))) {
+      const isHolidaySlot = skipHolidays && (
+        isJapaneseHoliday(current, holidays) || isJapaneseHoliday(slotEnd, holidays)
+      );
+
+      if (!isHolidaySlot && (!businessHoursOnly || (
+        isBusinessHours(current, holidays, skipHolidays) &&
+        isBusinessHours(slotEnd, holidays, skipHolidays)
+      ))) {
         slots.push({
           start: new Date(current),
           end: slotEnd,
@@ -103,9 +206,18 @@ export function findCommonAvailableSlots(
   start: Date,
   end: Date,
   durationMinutes: number,
-  businessHoursOnly = false
+  businessHoursOnly = false,
+  skipHolidays = false,
+  holidays?: Set<string>
 ): TimeSlot[] {
-  const allSlots = generateTimeSlots(start, end, durationMinutes, businessHoursOnly);
+  const allSlots = generateTimeSlots(
+    start,
+    end,
+    durationMinutes,
+    businessHoursOnly,
+    skipHolidays,
+    holidays
+  );
   
   return allSlots.filter(slot => 
     availabilityResults.every(result => 
@@ -119,12 +231,20 @@ export function findRawAvailableSlots(
   start: Date,
   end: Date,
   businessHoursOnly = false,
-  minDurationMinutes?: number
+  minDurationMinutes?: number,
+  skipHolidays = false,
+  holidays?: Set<string>
 ): TimeSlot[] {
   // 全ての忙しい時間を統合
   const allBusySlots: TimeSlot[] = [];
   for (const result of availabilityResults) {
     allBusySlots.push(...result.busySlots);
+  }
+
+  if (skipHolidays && holidays && holidays.size > 0) {
+    for (const dateKey of holidays) {
+      allBusySlots.push(createHolidaySlot(dateKey));
+    }
   }
   
   // 忙しい時間をマージして重複を除去
@@ -133,7 +253,7 @@ export function findRawAvailableSlots(
   // 忙しい時間がない場合、全時間が空き
   if (mergedBusy.length === 0) {
     if (businessHoursOnly) {
-      return splitByBusinessHours([{ start, end }]);
+      return splitByBusinessHours([{ start, end }], holidays, skipHolidays);
     }
     return [{ start, end }];
   }
@@ -163,7 +283,12 @@ export function findRawAvailableSlots(
   // 営業時間でフィルタリング（必要な場合）
   let filteredSlots = availableSlots;
   if (businessHoursOnly) {
-    filteredSlots = splitByBusinessHours(availableSlots);
+    filteredSlots = splitByBusinessHours(availableSlots, holidays, skipHolidays);
+  } else if (skipHolidays && holidays && holidays.size > 0) {
+    filteredSlots = filteredSlots.filter(slot =>
+      !isJapaneseHoliday(slot.start, holidays) &&
+      !isJapaneseHoliday(slot.end, holidays)
+    );
   }
   
   // 最小時間でフィルタリング
@@ -177,7 +302,11 @@ export function findRawAvailableSlots(
   return filteredSlots;
 }
 
-function splitByBusinessHours(slots: TimeSlot[]): TimeSlot[] {
+function splitByBusinessHours(
+  slots: TimeSlot[],
+  holidays?: Set<string>,
+  skipHolidays = false
+): TimeSlot[] {
   const result: TimeSlot[] = [];
   
   for (const slot of slots) {
@@ -189,8 +318,10 @@ function splitByBusinessHours(slots: TimeSlot[]): TimeSlot[] {
       const dayEnd = new Date(current);
       dayEnd.setHours(18, 0, 0, 0);
       
-      // 週末をスキップ
-      if (current.getDay() === 0 || current.getDay() === 6) {
+      const isWeekend = current.getDay() === 0 || current.getDay() === 6;
+      const isHolidayDay = skipHolidays && isJapaneseHoliday(current, holidays);
+
+      if (isWeekend || isHolidayDay) {
         current = new Date(current);
         current.setDate(current.getDate() + 1);
         current.setHours(9, 0, 0, 0);

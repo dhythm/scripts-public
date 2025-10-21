@@ -7,7 +7,14 @@ import { HubSpotClient } from "./clients/hubspot.ts";
 import { AvailabilityAnalyzer } from "./processors/availability-analyzer.ts";
 import { GoogleAuth } from "./utils/auth-google.ts";
 import { HubSpotAuth } from "./utils/auth-hubspot.ts";
-import { formatDateTime, formatDateTimeWithDay, formatTimeOnly, isSameDay, findRawAvailableSlots } from "./utils/date-utils.ts";
+import {
+  formatDateTime,
+  formatDateTimeWithDay,
+  formatTimeOnly,
+  isSameDay,
+  findRawAvailableSlots,
+  loadJapaneseHolidays,
+} from "./utils/date-utils.ts";
 import { MeetingCandidate, TimeSlot, OpenAIConfig, CliOptions } from "./types/index.ts";
 
 async function main() {
@@ -18,12 +25,28 @@ async function main() {
     // CLIオプションを解析
     const options = parseCliArgs(Deno.args);
 
+    let holidaySet: Set<string> | undefined;
+    let skipHolidaysEnabled = options.skipHolidays;
+    if (options.skipHolidays) {
+      try {
+        holidaySet = await loadJapaneseHolidays(options.startDate, options.endDate);
+        if (options.verbose) {
+          console.log(`祝日データ: ${holidaySet.size}日分を読み込みました。`);
+        }
+      } catch (error) {
+        console.warn("祝日データの取得に失敗しました。祝日除外を無効化します。", error);
+        holidaySet = undefined;
+        skipHolidaysEnabled = false;
+      }
+    }
+
     if (options.verbose) {
       console.log("設定:");
       console.log(`  期間: ${formatDateTime(options.startDate)} - ${formatDateTime(options.endDate)}`);
       console.log(`  会議時間: ${options.duration}分`);
       console.log(`  参加者: ${options.participants.length}人`);
       console.log(`  営業時間のみ: ${options.businessHoursOnly}`);
+      console.log(`  祝日除外: ${skipHolidaysEnabled}`);
       console.log(`  OpenAI使用: ${options.useOpenAI}`);
     }
 
@@ -139,7 +162,9 @@ async function main() {
         options.startDate,
         options.endDate,
         options.businessHoursOnly,
-        minDuration
+        minDuration,
+        skipHolidaysEnabled,
+        holidaySet
       );
       
       if (options.verbose) {
@@ -157,7 +182,9 @@ async function main() {
         options.startDate,
         options.endDate,
         options.duration,
-        options.businessHoursOnly
+        options.businessHoursOnly,
+        skipHolidaysEnabled,
+        holidaySet
       );
 
       if (options.verbose) {

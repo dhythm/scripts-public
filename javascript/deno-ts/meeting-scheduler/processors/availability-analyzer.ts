@@ -25,14 +25,18 @@ export class AvailabilityAnalyzer {
     startDate: Date,
     endDate: Date,
     durationMinutes: number,
-    businessHoursOnly: boolean
+    businessHoursOnly: boolean,
+    skipHolidays: boolean,
+    holidays?: Set<string>
   ): TimeSlot[] {
     return findCommonAvailableSlots(
       availabilityResults,
       startDate,
       endDate,
       durationMinutes,
-      businessHoursOnly
+      businessHoursOnly,
+      skipHolidays,
+      holidays
     );
   }
 
