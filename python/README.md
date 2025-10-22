@@ -236,6 +236,106 @@ uv run python transcribe_google_chirp.py lecture.wav \
 > **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。citeturn1search1turn1search2
 > **権限エラーが発生した場合**: エラーメッセージに `speech.recognizers.recognize` が含まれるときは、Speech-to-Text API v2 を有効化し、サービスアカウントに `roles/speech.transcriber` 以上を付与してください。
 
+#### Batch 結果の保存と --batch-output-save-text
+
+- `--batch-output-gcs-uri` を指定すると、Batch Recognize の結果ファイル（JSON）が Cloud Storage 上に出力されます。
+- `--batch-output-save-text` を併用すると、API から取得したテキストのみを `.txt` として同じプレフィックスに保存します。JSON とテキストを分けて管理したい場合に便利です。
+- `--batch-output-gcs-uri` を省略した場合は、アップロード先バケットの `/results/` 以下に自動的にプレフィックスが割り当てられます。自動プレフィックスでも `--batch-output-save-text` は有効です。
+- `--batch-output-save-text` は Batch モード以外では無視され、Cloud Storage 以外（ローカルファイルのみ）では保存先がないため警告が表示されます。
+
+```sh
+# Batch で JSON とテキストを Cloud Storage に保存する例
+uv run python transcribe_google_chirp.py lecture.wav \
+  --mode batch \
+  --project my-project \
+  --location asia-northeast1 \
+  --format json \
+  --batch-output-gcs-uri gs://my-bucket/chirp/jobs/lecture \
+  --batch-output-save-text
+```
+
+#### 🎧 Tips: 音声ファイルの前処理と変換
+
+##### 1. 非対応フォーマットの注意点
+`audio/mp4a-latm`（LATM パケット化 AAC）は **Speech-to-Text v2 / Chirp 3 では非対応** です。  
+この形式をアップロードするとエラーコード `3 (INVALID_ARGUMENT)` が発生します。  
+**事前に WAV 形式へ変換**してから文字起こしを行ってください。
+
+```bash
+ffmpeg -i input.m4a \
+       -acodec pcm_s16le -ac 1 -ar 16000 \
+       input_converted.wav
+```
+
+- `-acodec pcm_s16le`: 16-bit PCM へ変換  
+- `-ac 1`: モノラル化（1チャンネル）  
+- `-ar 16000`: サンプリングレートを 16 kHz に変換（STT 推奨設定）
+
+---
+
+##### 2. 長時間音声の分割
+`Recognize` API は **1 ファイルあたり最長 60 分** までしか処理できません。  
+60 分を超える音声は、以下のように `ffmpeg` で分割してください。
+
+```bash
+ffmpeg -i input_converted.wav \
+       -f segment -segment_time 1800 -c copy \
+       input_part_%02d.wav
+```
+
+上記例では 30 分（1800 秒）ごとにファイルを分割します。
+
+---
+
+##### 3. 前処理オプションの利用
+`python/transcribe_google_chirp.py` にはローカル音声向けの前処理機能を追加しています。  
+CLI フラグでノーマライズ・ゲイン調整・ノイズ除去などを制御可能です。
+
+###### 依存パッケージの追加
+```bash
+uv add pydub noisereduce
+```
+
+###### 例: ノイズ除去＋音量調整を有効化
+```bash
+uv run python transcribe_google_chirp.py sample.m4a \
+  --preprocess-denoise \
+  --preprocess-normalize \
+  --preprocess-gain-db 4 \
+  --preprocess-noise-reduce-amount 0.6 \
+  --mode batch
+```
+
+- ノイズ除去は **先頭約0.5秒** をノイズサンプルとして解析します。  
+- ノーマライズはデフォルトで **-3 dBFS** を目標にしています（`--preprocess-target-dbfs` で変更可）。  
+- 処理後は一時 WAV を生成し、Batch/Sync/Streaming すべてで前処理済み音声を参照します。
+
+---
+
+##### 4. 音量が小さい場合のおすすめ設定
+登壇者の声が全体的に小さい場合は、以下の設定を試してください。
+
+```bash
+--preprocess-normalize --preprocess-target-dbfs -3
+```
+
+- ピークを -3 dBFS に揃え、破綻を避けつつ音量を底上げします。  
+- まだ小さい場合は `--preprocess-gain-db 3〜6` を追加し、段階的に調整してください。  
+- ノイズが気になる場合は以下を組み合わせます：
+
+```bash
+--preprocess-denoise --preprocess-noise-reduce-amount 0.6
+```
+
+- 一定の環境ノイズ（例: 空調音）がある場合は `--preprocess-stationary-noise` を追加すると安定します。  
+- ノイズ除去強度は **0.6〜0.8 程度** が目安です。
+
+---
+
+##### 5. 次のステップ
+1. 上記設定でサンプル音声を処理し、音量とノイズ低減の効果を確認します。  
+2. 問題なければ本番音声に適用し、`--preprocess-noise-reduce-amount` や `--preprocess-gain-db` を微調整してください。
+
 ##### モデル・処理オプション
 
 | オプション | 説明 | デフォルト |
