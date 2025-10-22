@@ -18,6 +18,21 @@ from google.api_core.exceptions import Conflict, Forbidden, NotFound, Permission
 from google.cloud import speech_v2
 from google.cloud.speech_v2.types import cloud_speech
 
+try:
+    from pydub import AudioSegment
+except ImportError:  # pragma: no cover
+    AudioSegment = None  # type: ignore
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore
+
+try:
+    import noisereduce as nr
+except ImportError:  # pragma: no cover
+    nr = None  # type: ignore
+
 
 @dataclass
 class Segment:
@@ -174,6 +189,39 @@ def parse_args() -> argparse.Namespace:
         "--show-config",
         action="store_true",
         help="実際に送信する RecognitionConfig を標準エラーへ表示",
+    )
+    parser.add_argument(
+        "--preprocess-normalize",
+        action="store_true",
+        help="ローカル音声にピークノーマライズを適用して音量差を均す",
+    )
+    parser.add_argument(
+        "--preprocess-target-dbfs",
+        type=float,
+        default=-3.0,
+        help="ノーマライズ時の目標ピークレベル (dBFS)",
+    )
+    parser.add_argument(
+        "--preprocess-gain-db",
+        type=float,
+        default=0.0,
+        help="ローカル音声に追加で与えるゲイン量 (dB)",
+    )
+    parser.add_argument(
+        "--preprocess-denoise",
+        action="store_true",
+        help="ローカル音声にスペクトル減算法ベースのノイズリダクションを適用",
+    )
+    parser.add_argument(
+        "--preprocess-noise-reduce-amount",
+        type=float,
+        default=0.8,
+        help="ノイズリダクションの強度 (0.0-1.0, 大きいほど強く削減)",
+    )
+    parser.add_argument(
+        "--preprocess-stationary-noise",
+        action="store_true",
+        help="定常ノイズを想定してノイズ推定を安定化 (noisereduce の stationary=True)",
     )
     return parser.parse_args()
 
@@ -461,33 +509,53 @@ def recognize_sync(
     transcript_parts: List[str] = []
     language = None
     last_end_ms = 0
+    cumulative_transcript = ""
+    cumulative_word_count = 0
 
     for result in response.results:
         if not result.alternatives:
             continue
         top_alt = result.alternatives[0]
-        transcript_parts.append(top_alt.transcript)
         language = result.language_code or language
         end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
         start_ms = last_end_ms if end_ms is not None else None
-        segments.append(
-            Segment(
-                transcript=top_alt.transcript,
-                confidence=getattr(top_alt, "confidence", None),
-                start_ms=start_ms,
-                end_ms=end_ms,
-            )
-        )
-        last_end_ms = end_ms or last_end_ms
-        for word_info in getattr(top_alt, "words", []):
-            words.append(
-                Word(
-                    word=word_info.word,
-                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                    speaker_label=getattr(word_info, "speaker_label", None) or None,
+        new_transcript = top_alt.transcript or ""
+        addition = new_transcript
+        if cumulative_transcript and addition.startswith(cumulative_transcript):
+            addition = addition[len(cumulative_transcript) :]
+        elif cumulative_transcript and cumulative_transcript.endswith(addition):
+            addition = ""
+        addition = addition.lstrip("\n\r ")
+        addition = addition.rstrip()
+        if addition:
+            transcript_parts.append(addition)
+            segments.append(
+                Segment(
+                    transcript=addition,
+                    confidence=getattr(top_alt, "confidence", None),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
                 )
             )
+            last_end_ms = end_ms or last_end_ms
+        else:
+            last_end_ms = end_ms or last_end_ms
+
+        cumulative_transcript = new_transcript or cumulative_transcript
+
+        current_words = list(getattr(top_alt, "words", []))
+        if current_words:
+            start_index = min(cumulative_word_count, len(current_words))
+            for word_info in current_words[start_index:]:
+                words.append(
+                    Word(
+                        word=word_info.word,
+                        start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                        end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                        speaker_label=getattr(word_info, "speaker_label", None) or None,
+                    )
+                )
+            cumulative_word_count = len(current_words)
 
     transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
     return TranscriptionResult(
@@ -548,6 +616,9 @@ def recognize_streaming(
     language = None
     last_end_ms = 0
 
+    cumulative_transcript = ""
+    cumulative_word_count = 0
+
     try:
         for response in responses:
             raise_if_rpc_error(getattr(response, "error", None), recognizer_name, "ストリーミング認識")
@@ -556,28 +627,46 @@ def recognize_streaming(
                     continue
                 top_alt = result.alternatives[0]
                 if result.is_final:
-                    transcript_parts.append(top_alt.transcript)
                     language = result.language_code or language
                     end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
                     start_ms = last_end_ms if end_ms is not None else None
-                    segments.append(
-                        Segment(
-                            transcript=top_alt.transcript,
-                            confidence=getattr(top_alt, "confidence", None),
-                            start_ms=start_ms,
-                            end_ms=end_ms,
-                        )
-                    )
-                    last_end_ms = end_ms or last_end_ms
-                    for word_info in getattr(top_alt, "words", []):
-                        words.append(
-                            Word(
-                                word=word_info.word,
-                                start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                                end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                                speaker_label=getattr(word_info, "speaker_label", None) or None,
+                    new_transcript = top_alt.transcript or ""
+                    addition = new_transcript
+                    if cumulative_transcript and addition.startswith(cumulative_transcript):
+                        addition = addition[len(cumulative_transcript) :]
+                    elif cumulative_transcript and cumulative_transcript.endswith(addition):
+                        addition = ""
+                    addition = addition.lstrip("\n\r ")
+                    addition = addition.rstrip()
+                    if addition:
+                        transcript_parts.append(addition)
+                        segments.append(
+                            Segment(
+                                transcript=addition,
+                                confidence=getattr(top_alt, "confidence", None),
+                                start_ms=start_ms,
+                                end_ms=end_ms,
                             )
                         )
+                        last_end_ms = end_ms or last_end_ms
+                    else:
+                        last_end_ms = end_ms or last_end_ms
+
+                    cumulative_transcript = new_transcript or cumulative_transcript
+
+                    current_words = list(getattr(top_alt, "words", []))
+                    if current_words:
+                        start_index = min(cumulative_word_count, len(current_words))
+                        for word_info in current_words[start_index:]:
+                            words.append(
+                                Word(
+                                    word=word_info.word,
+                                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                                    speaker_label=getattr(word_info, "speaker_label", None) or None,
+                                )
+                            )
+                        cumulative_word_count = len(current_words)
                 elif interim:
                     print(f"[interim] {top_alt.transcript}", file=sys.stderr)
     except (PermissionDenied, NotFound) as exc:
@@ -659,32 +748,53 @@ def recognize_batch(
     language = None
     last_end_ms = 0
 
+    cumulative_transcript = ""
+    cumulative_word_count = 0
+
     for result in transcript_proto.results:
         if not result.alternatives:
             continue
         top_alt = result.alternatives[0]
-        transcript_parts.append(top_alt.transcript)
         language = result.language_code or language
         end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
         start_ms = last_end_ms if end_ms is not None else None
-        segments.append(
-            Segment(
-                transcript=top_alt.transcript,
-                confidence=getattr(top_alt, "confidence", None),
-                start_ms=start_ms,
-                end_ms=end_ms,
-            )
-        )
-        last_end_ms = end_ms or last_end_ms
-        for word_info in getattr(top_alt, "words", []):
-            words.append(
-                Word(
-                    word=word_info.word,
-                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                    speaker_label=getattr(word_info, "speaker_label", None) or None,
+        new_transcript = top_alt.transcript or ""
+        addition = new_transcript
+        if cumulative_transcript and addition.startswith(cumulative_transcript):
+            addition = addition[len(cumulative_transcript) :]
+        elif cumulative_transcript and cumulative_transcript.endswith(addition):
+            addition = ""
+        addition = addition.lstrip("\n\r ")
+        addition = addition.rstrip()
+        if addition:
+            transcript_parts.append(addition)
+            segments.append(
+                Segment(
+                    transcript=addition,
+                    confidence=getattr(top_alt, "confidence", None),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
                 )
             )
+            last_end_ms = end_ms or last_end_ms
+        else:
+            last_end_ms = end_ms or last_end_ms
+
+        cumulative_transcript = new_transcript or cumulative_transcript
+
+        current_words = list(getattr(top_alt, "words", []))
+        if current_words:
+            start_index = min(cumulative_word_count, len(current_words))
+            for word_info in current_words[start_index:]:
+                words.append(
+                    Word(
+                        word=word_info.word,
+                        start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                        end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                        speaker_label=getattr(word_info, "speaker_label", None) or None,
+                    )
+                )
+            cumulative_word_count = len(current_words)
 
     transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
     return TranscriptionResult(
@@ -741,6 +851,125 @@ def write_output(content: str, path: Path) -> None:
     path.write_text(content + "\n", encoding="utf-8")
 
 
+def preprocess_required(args: argparse.Namespace) -> bool:
+    return bool(
+        args.preprocess_normalize
+        or args.preprocess_gain_db != 0
+        or args.preprocess_denoise
+    )
+
+
+def apply_noise_reduction(
+    audio: "AudioSegment",
+    *,
+    reduce_amount: float,
+    stationary: bool,
+) -> "AudioSegment":
+    if nr is None or np is None:
+        print(
+            "警告: noisereduce または numpy が利用できないため、ノイズ除去をスキップします。",
+            file=sys.stderr,
+        )
+        return audio
+
+    print(
+        f"ノイズ除去を適用: 強度 {reduce_amount:.2f}, 定常ノイズモード {stationary}",
+        file=sys.stderr,
+    )
+
+    samples = np.array(audio.get_array_of_samples())
+    channels = audio.channels
+
+    if channels > 1:
+        samples = samples.reshape((-1, channels))
+        samples = samples.mean(axis=1)
+
+    samples = samples.astype(np.float32)
+    max_int_value = float(1 << (8 * audio.sample_width - 1))
+    if max_int_value == 0:
+        return audio
+    samples /= max_int_value
+
+    sample_rate = audio.frame_rate
+    noise_duration = min(0.5, len(samples) / sample_rate / 2)
+    noise_len = int(noise_duration * sample_rate)
+
+    if noise_len > 0:
+        noise_clip = samples[:noise_len]
+        reduced = nr.reduce_noise(
+            y=samples,
+            sr=sample_rate,
+            y_noise=noise_clip,
+            stationary=stationary,
+            prop_decrease=reduce_amount,
+        )
+    else:
+        reduced = nr.reduce_noise(
+            y=samples,
+            sr=sample_rate,
+            stationary=stationary,
+            prop_decrease=reduce_amount,
+        )
+
+    reduced = np.clip(reduced, -1.0, 1.0)
+    reduced_int16 = (reduced * 32767).astype(np.int16)
+
+    return AudioSegment(
+        reduced_int16.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=2,
+        channels=1,
+    )
+
+
+def preprocess_local_audio(
+    file_path: Path,
+    *,
+    normalize: bool,
+    target_dbfs: float,
+    gain_db: float,
+    denoise: bool,
+    noise_reduce_amount: float,
+    stationary_noise: bool,
+) -> Path:
+    if AudioSegment is None:
+        raise TranscriptionError(
+            "音声前処理を有効化するには pydub が必要です。`uv add pydub noisereduce` 等でインストールしてください。"
+        )
+
+    print(f"前処理: {file_path}", file=sys.stderr)
+    audio = AudioSegment.from_file(str(file_path))
+
+    if denoise:
+        reduce_amount = max(0.0, min(1.0, noise_reduce_amount))
+        audio = apply_noise_reduction(
+            audio,
+            reduce_amount=reduce_amount,
+            stationary=stationary_noise,
+        )
+
+    if gain_db != 0:
+        print(f"ゲイン調整: {gain_db:+.1f} dB", file=sys.stderr)
+        audio = audio + gain_db
+
+    if normalize:
+        if audio.dBFS == float("-inf"):
+            print("警告: 無音のためノーマライズをスキップします。", file=sys.stderr)
+        else:
+            change_in_dbfs = target_dbfs - audio.dBFS
+            print(
+                f"ノーマライズ: {audio.dBFS:.1f} → {target_dbfs:.1f} dBFS (変化 {change_in_dbfs:+.1f} dB)",
+                file=sys.stderr,
+            )
+            audio = audio.apply_gain(change_in_dbfs)
+
+    processed_path = file_path.with_name(f"{file_path.stem}_preprocessed.wav")
+    audio.export(str(processed_path), format="wav")
+    print(f"前処理済みファイルを出力: {processed_path}", file=sys.stderr)
+
+    return processed_path
+
+
 def main() -> int:
     args = parse_args()
 
@@ -760,104 +989,141 @@ def main() -> int:
     bucket_notices = set()
 
     for audio in args.audio:
-        local_path: Optional[Path] = None
+        original_local_path: Optional[Path] = None
+        effective_local_path: Optional[Path] = None
         source_uri: Optional[str] = None
+        cleanup_paths: List[Path] = []
 
-        if is_gcs_uri(audio):
-            source_uri = audio
-        else:
-            local_path = Path(audio)
-            validate_local_audio(local_path)
-            source_uri = str(local_path)
-
-        mode = choose_mode(args, source_uri, local_path)
-
-        if mode == "streaming" and source_uri.startswith("gs://"):
-            raise TranscriptionError("ストリーミング認識では gs:// URI を直接指定できません。ローカルにダウンロードしてください。")
-
-        if mode == "batch":
-            if storage_client is None:
-                try:
-                    from google.cloud import storage
-                except ImportError as exc:  # pragma: no cover
-                    raise TranscriptionError(
-                        "google-cloud-storage がインストールされていません。uv sync を実行してください。"
-                    ) from exc
-                storage_client = storage.Client(project=project)
-
-            if args.upload_bucket:
-                target_bucket = args.upload_bucket
+        try:
+            if is_gcs_uri(audio):
+                source_uri = audio
             else:
-                if default_bucket_name is None:
-                    default_bucket_name = derive_default_bucket_name(project, args.location)
-                target_bucket = default_bucket_name
+                original_local_path = Path(audio)
+                validate_local_audio(original_local_path)
+                source_uri = str(original_local_path)
+                effective_local_path = original_local_path
 
-            bucket_created = ensure_bucket_exists(storage_client, target_bucket, args.location)
-            if target_bucket not in bucket_notices:
-                message = (
-                    f"Batch処理用にバケット {target_bucket} を新規作成しました。"
-                    if bucket_created
-                    else f"Batch処理用にバケット {target_bucket} を使用します。"
+                if preprocess_required(args):
+                    processed_path = preprocess_local_audio(
+                        original_local_path,
+                        normalize=args.preprocess_normalize,
+                        target_dbfs=args.preprocess_target_dbfs,
+                        gain_db=args.preprocess_gain_db,
+                        denoise=args.preprocess_denoise,
+                        noise_reduce_amount=args.preprocess_noise_reduce_amount,
+                        stationary_noise=args.preprocess_stationary_noise,
+                    )
+                    cleanup_paths.append(processed_path)
+                    effective_local_path = processed_path
+                    source_uri = str(processed_path)
+
+            if source_uri is None:
+                raise TranscriptionError("音声ソースを判別できませんでした。")
+
+            mode = choose_mode(args, source_uri, effective_local_path)
+
+            if mode == "streaming" and source_uri.startswith("gs://"):
+                raise TranscriptionError("ストリーミング認識では gs:// URI を直接指定できません。ローカルにダウンロードしてください。")
+
+            if mode == "batch":
+                if storage_client is None:
+                    try:
+                        from google.cloud import storage
+                    except ImportError as exc:  # pragma: no cover
+                        raise TranscriptionError(
+                            "google-cloud-storage がインストールされていません。uv sync を実行してください。"
+                        ) from exc
+                    storage_client = storage.Client(project=project)
+
+                if args.upload_bucket:
+                    target_bucket = args.upload_bucket
+                else:
+                    if default_bucket_name is None:
+                        default_bucket_name = derive_default_bucket_name(project, args.location)
+                    target_bucket = default_bucket_name
+
+                bucket_created = ensure_bucket_exists(storage_client, target_bucket, args.location)
+                if target_bucket not in bucket_notices:
+                    message = (
+                        f"Batch処理用にバケット {target_bucket} を新規作成しました。"
+                        if bucket_created
+                        else f"Batch処理用にバケット {target_bucket} を使用します。"
+                    )
+                    print(message, file=sys.stderr)
+                    bucket_notices.add(target_bucket)
+
+                if not is_gcs_uri(source_uri):
+                    if effective_local_path is None:  # pragma: no cover
+                        raise TranscriptionError("ローカルファイルのパスが特定できませんでした。")
+                    uploaded_uri = upload_to_gcs(effective_local_path, target_bucket, args.upload_prefix, storage_client)
+                    uploaded_uris.append(uploaded_uri)
+                    source_uri = uploaded_uri
+
+                result = recognize_batch(
+                    client,
+                    recognizer_name,
+                    config,
+                    source_uri,
+                    timeout=args.batch_timeout,
                 )
-                print(message, file=sys.stderr)
-                bucket_notices.add(target_bucket)
-
-            if not is_gcs_uri(source_uri):
-                if local_path is None:  # pragma: no cover
-                    raise TranscriptionError("ローカルファイルのパスが特定できませんでした。")
-                uploaded_uri = upload_to_gcs(local_path, target_bucket, args.upload_prefix, storage_client)
-                uploaded_uris.append(uploaded_uri)
-                source_uri = uploaded_uri
-
-            result = recognize_batch(
-                client,
-                recognizer_name,
-                config,
-                source_uri,
-                timeout=args.batch_timeout,
-            )
-        elif mode == "sync":
-            if is_gcs_uri(source_uri):
-                result = recognize_sync(client, recognizer_name, config, source_uri, None)
+            elif mode == "sync":
+                if is_gcs_uri(source_uri):
+                    result = recognize_sync(client, recognizer_name, config, source_uri, None)
+                else:
+                    if effective_local_path is None:
+                        raise TranscriptionError("ローカルファイルのパスが特定できませんでした。")
+                    result = recognize_sync(
+                        client,
+                        recognizer_name,
+                        config,
+                        source_uri,
+                        effective_local_path,
+                    )
+            elif mode == "streaming":
+                if not effective_local_path:
+                    raise TranscriptionError("ストリーミングはローカルファイルのみ対応しています。")
+                result = recognize_streaming(
+                    client,
+                    recognizer_name,
+                    config,
+                    effective_local_path,
+                    chunk_size=args.chunk_size,
+                    interim=args.interim_results,
+                )
             else:
-                result = recognize_sync(client, recognizer_name, config, source_uri, Path(source_uri))
-        elif mode == "streaming":
-            if not local_path:
-                raise TranscriptionError("ストリーミングはローカルファイルのみ対応しています。")
-            result = recognize_streaming(
-                client,
-                recognizer_name,
-                config,
-                local_path,
-                chunk_size=args.chunk_size,
-                interim=args.interim_results,
-            )
-        else:
-            raise TranscriptionError(f"未知のモードです: {mode}")
+                raise TranscriptionError(f"未知のモードです: {mode}")
 
-        output_text = render_result(result, args.format)
-        if not result.transcript.strip():
-            print(
-                "警告: 文字起こし結果が空でした。音声が無音か、API がエラーを返した可能性があります。",
-                file=sys.stderr,
-            )
+            output_text = render_result(result, args.format)
+            if not result.transcript.strip():
+                print(
+                    "警告: 文字起こし結果が空でした。音声が無音か、API がエラーを返した可能性があります。",
+                    file=sys.stderr,
+                )
 
-        if args.output:
-            write_output(output_text, args.output)
-        elif args.output_dir:
-            suffix = ".json" if args.format == "json" else ".txt"
-            target = args.output_dir / (Path(audio).stem + suffix)
-            write_output(output_text, target)
-        else:
-            print(f"=== {audio} ({result.mode}) ===")
-            if output_text:
-                print(output_text)
+            if args.output:
+                write_output(output_text, args.output)
+            elif args.output_dir:
+                suffix = ".json" if args.format == "json" else ".txt"
+                target = args.output_dir / (Path(audio).stem + suffix)
+                write_output(output_text, target)
+            else:
+                print(f"=== {audio} ({result.mode}) ===")
+                if output_text:
+                    print(output_text)
 
-            if local_path is not None:
-                default_suffix = ".json" if args.format == "json" else ".txt"
-                default_path = local_path.with_suffix(default_suffix)
-                write_output(output_text, default_path)
-                print(f"[saved] {default_path}")
+                if original_local_path is not None:
+                    default_suffix = ".json" if args.format == "json" else ".txt"
+                    default_path = original_local_path.with_suffix(default_suffix)
+                    write_output(output_text, default_path)
+                    print(f"[saved] {default_path}")
+        finally:
+            for temp_path in cleanup_paths:
+                if original_local_path and temp_path == original_local_path:
+                    continue
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     if uploaded_uris:
         joined = "\n".join(uploaded_uris)
