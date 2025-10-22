@@ -189,10 +189,13 @@ Google Cloud Speech-to-Text v2 の最新モデル **Chirp 3** を利用した日
 - `GOOGLE_CLOUD_PROJECT` もしくは `--project` でプロジェクト ID を指定
 - Chirp 3 が利用可能なリージョン (例: `us`, `eu`, `asia-northeast1`, `asia-southeast1`) を選択（デフォルトは `asia-northeast1`＝東京）citeturn1search2
 - Batch Recognize では Google Cloud Storage の `gs://` URI が必須（ローカル音声は自動アップロードに対応）citeturn1search0
+- Cloud Storage バケットの作成・読み取りに `roles/storage.admin`（または同等のバケット操作権限）を付与
+- Speech-to-Text API v2 を有効化し、サービスアカウントに `roles/speech.transcriber` 以上の権限を付与
 - `uv sync` を実行して依存関係 (`google-cloud-speech`, `google-cloud-storage`) をインストール
 - サービスアカウントや ADC に `project_id` が含まれていれば `--project` を省略できます（自動検出）
 - `--upload-bucket` を省略すると、プロジェクトとリージョンに基づく専用バケットを自動作成し再利用します（初回は作成ログを表示）
 - サービスアカウント JSON のパスは `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/service-account.json` のように環境変数で指定します（絶対パス推奨）
+- 出力先を指定しない場合でも、各音声ファイルと同じディレクトリに同名の `.txt`（`--format json` のときは `.json`）を自動保存します
 
 #### 基本的な使用方法
 
@@ -231,6 +234,7 @@ uv run python transcribe_google_chirp.py lecture.wav \
 - `--phrase`: Speech Adaptation で固有名詞などを強調し、認識精度を向上
 
 > **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。citeturn1search1turn1search2
+> **権限エラーが発生した場合**: エラーメッセージに `speech.recognizers.recognize` が含まれるときは、Speech-to-Text API v2 を有効化し、サービスアカウントに `roles/speech.transcriber` 以上を付与してください。
 
 ##### モデル・処理オプション
 

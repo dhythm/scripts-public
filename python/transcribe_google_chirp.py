@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from google.api_core.client_options import ClientOptions
-from google.api_core.exceptions import Conflict, NotFound
+from google.api_core.exceptions import Conflict, Forbidden, NotFound, PermissionDenied
 from google.cloud import speech_v2
 from google.cloud.speech_v2.types import cloud_speech
 
@@ -210,6 +210,13 @@ def ensure_bucket_exists(storage_client, bucket_name: str, location: str) -> boo
     try:
         storage_client.get_bucket(bucket_name)
         return False
+    except Forbidden as exc:
+        raise TranscriptionError(
+            "Cloud Storage バケットへアクセスできません。\n"
+            f"- 対象バケット: {bucket_name}\n"
+            "- サービスアカウントに `roles/storage.admin` または少なくとも `roles/storage.objectAdmin` と `roles/storage.legacyBucketReader` を付与してください。"
+            f"\n- 詳細: {exc}"
+        ) from exc
     except NotFound:
         bucket = storage_client.bucket(bucket_name)
         try:
@@ -221,7 +228,58 @@ def ensure_bucket_exists(storage_client, bucket_name: str, location: str) -> boo
             raise TranscriptionError(
                 f"バケット {bucket_name} を作成できませんでした。別名を --upload-bucket で指定してください。"
             ) from exc
+        except Forbidden as exc:
+            raise TranscriptionError(
+                "Cloud Storage バケットを作成する権限がありません。\n"
+                "- プロジェクトに対して `roles/storage.admin` または `roles/storage.bucketCreator` を付与してください。"
+                f"\n- 詳細: {exc}"
+            ) from exc
         return True
+
+
+def extract_location_from_recognizer(recognizer_name: str) -> Optional[str]:
+    parts = recognizer_name.split("/")
+    try:
+        index = parts.index("locations")
+        return parts[index + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def handle_speech_exception(exc: Exception, recognizer_name: str) -> None:
+    location = extract_location_from_recognizer(recognizer_name) or "指定リージョン"
+    if isinstance(exc, PermissionDenied):
+        raise TranscriptionError(
+            "Google Cloud Speech-to-Text v2 API の呼び出しで権限が不足しています。\n"
+            f"- 利用中の Recognizer: {recognizer_name}\n"
+            "- サービスアカウントに `roles/speech.transcriber` または `roles/cloudspeech.admin` を付与し、"
+            "Speech-to-Text API v2 がプロジェクトで有効化されていることを確認してください。"
+            f"\n- 詳細: {exc}"
+        ) from exc
+    if isinstance(exc, NotFound):
+        raise TranscriptionError(
+            "指定した Recognizer が見つかりません。\n"
+            f"- Recognizer: {recognizer_name}\n"
+            f"- 対象リージョン ({location}) で `gcloud ml speech recognizers create` を実行してリソースを作成するか、"
+            "既存リソースのIDを --recognizer で指定してください。"
+            f"\n- 詳細: {exc}"
+        ) from exc
+    raise TranscriptionError(f"Speech-to-Text API 呼び出しで予期せぬエラーが発生しました: {exc}") from exc
+
+
+def raise_if_rpc_error(error, recognizer_name: str, context: str) -> None:
+    if not error:
+        return
+    code = getattr(error, "code", 0)
+    if not code:
+        return
+    message = getattr(error, "message", "") or "(詳細情報なし)"
+    raise TranscriptionError(
+        f"{context} でエラーが返されました。\n"
+        f"- Recognizer: {recognizer_name}\n"
+        f"- エラーコード: {code}\n"
+        f"- 詳細: {message}"
+    )
 
 
 def validate_local_audio(file_path: Path) -> None:
@@ -391,7 +449,12 @@ def recognize_sync(
             uri=source,
         )
 
-    response = client.recognize(request=request)
+    try:
+        response = client.recognize(request=request)
+    except (PermissionDenied, NotFound) as exc:
+        handle_speech_exception(exc, recognizer_name)
+
+    raise_if_rpc_error(getattr(response, "error", None), recognizer_name, "同期認識")
 
     segments: List[Segment] = []
     words: List[Word] = []
@@ -472,9 +535,12 @@ def recognize_streaming(
     chunk_size: int,
     interim: bool,
 ) -> TranscriptionResult:
-    responses = client.streaming_recognize(
-        requests=stream_requests(audio_path, recognizer_name, config, chunk_size, interim)
-    )
+    try:
+        responses = client.streaming_recognize(
+            requests=stream_requests(audio_path, recognizer_name, config, chunk_size, interim)
+        )
+    except (PermissionDenied, NotFound) as exc:
+        handle_speech_exception(exc, recognizer_name)
 
     segments: List[Segment] = []
     words: List[Word] = []
@@ -482,36 +548,40 @@ def recognize_streaming(
     language = None
     last_end_ms = 0
 
-    for response in responses:
-        for result in response.results:
-            if not result.alternatives:
-                continue
-            top_alt = result.alternatives[0]
-            if result.is_final:
-                transcript_parts.append(top_alt.transcript)
-                language = result.language_code or language
-                end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
-                start_ms = last_end_ms if end_ms is not None else None
-                segments.append(
-                    Segment(
-                        transcript=top_alt.transcript,
-                        confidence=getattr(top_alt, "confidence", None),
-                        start_ms=start_ms,
-                        end_ms=end_ms,
-                    )
-                )
-                last_end_ms = end_ms or last_end_ms
-                for word_info in getattr(top_alt, "words", []):
-                    words.append(
-                        Word(
-                            word=word_info.word,
-                            start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                            end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                            speaker_label=getattr(word_info, "speaker_label", None) or None,
+    try:
+        for response in responses:
+            raise_if_rpc_error(getattr(response, "error", None), recognizer_name, "ストリーミング認識")
+            for result in response.results:
+                if not result.alternatives:
+                    continue
+                top_alt = result.alternatives[0]
+                if result.is_final:
+                    transcript_parts.append(top_alt.transcript)
+                    language = result.language_code or language
+                    end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
+                    start_ms = last_end_ms if end_ms is not None else None
+                    segments.append(
+                        Segment(
+                            transcript=top_alt.transcript,
+                            confidence=getattr(top_alt, "confidence", None),
+                            start_ms=start_ms,
+                            end_ms=end_ms,
                         )
                     )
-            elif interim:
-                print(f"[interim] {top_alt.transcript}", file=sys.stderr)
+                    last_end_ms = end_ms or last_end_ms
+                    for word_info in getattr(top_alt, "words", []):
+                        words.append(
+                            Word(
+                                word=word_info.word,
+                                start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                                end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                                speaker_label=getattr(word_info, "speaker_label", None) or None,
+                            )
+                        )
+                elif interim:
+                    print(f"[interim] {top_alt.transcript}", file=sys.stderr)
+    except (PermissionDenied, NotFound) as exc:
+        handle_speech_exception(exc, recognizer_name)
 
     transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
     return TranscriptionResult(
@@ -543,8 +613,15 @@ def recognize_batch(
         ),
     )
 
-    operation = client.batch_recognize(request=request)
-    response = operation.result(timeout=timeout)
+    try:
+        operation = client.batch_recognize(request=request)
+    except (PermissionDenied, NotFound) as exc:
+        handle_speech_exception(exc, recognizer_name)
+
+    try:
+        response = operation.result(timeout=timeout)
+    except (PermissionDenied, NotFound) as exc:
+        handle_speech_exception(exc, recognizer_name)
 
     if not response.results:
         return TranscriptionResult(
@@ -556,7 +633,24 @@ def recognize_batch(
         )
 
     file_result = next(iter(response.results.values()))
+    if getattr(file_result, "error", None):
+        error = file_result.error
+        if getattr(error, "code", 0):
+            message = getattr(error, "message", "") or "(詳細情報なし)"
+            raise TranscriptionError(
+                "Batch Recognize でエラーが返されました。\n"
+                f"- Recognizer: {recognizer_name}\n"
+                f"- 対象 URI: {source_uri}\n"
+                f"- エラーコード: {error.code}\n"
+                f"- 詳細: {message}"
+            )
+
     inline_result = file_result.inline_result
+    if inline_result is None:
+        raise TranscriptionError(
+            "Batch Recognize から結果が得られませんでした。Cloud Logging にエラーが出ていないか確認してください。"
+        )
+
     transcript_proto = inline_result.transcript
 
     segments: List[Segment] = []
@@ -742,6 +836,11 @@ def main() -> int:
             raise TranscriptionError(f"未知のモードです: {mode}")
 
         output_text = render_result(result, args.format)
+        if not result.transcript.strip():
+            print(
+                "警告: 文字起こし結果が空でした。音声が無音か、API がエラーを返した可能性があります。",
+                file=sys.stderr,
+            )
 
         if args.output:
             write_output(output_text, args.output)
@@ -753,6 +852,12 @@ def main() -> int:
             print(f"=== {audio} ({result.mode}) ===")
             if output_text:
                 print(output_text)
+
+            if local_path is not None:
+                default_suffix = ".json" if args.format == "json" else ".txt"
+                default_path = local_path.with_suffix(default_suffix)
+                write_output(output_text, default_path)
+                print(f"[saved] {default_path}")
 
     if uploaded_uris:
         joined = "\n".join(uploaded_uris)

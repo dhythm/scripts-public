@@ -2,3 +2,5 @@
 
 *.pdf
 .env
+
+*service-account*.json
