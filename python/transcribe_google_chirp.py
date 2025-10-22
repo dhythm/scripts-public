@@ -11,7 +11,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from google.api_core.client_options import ClientOptions
 from google.api_core.exceptions import Conflict, Forbidden, NotFound, PermissionDenied
@@ -189,6 +189,15 @@ def parse_args() -> argparse.Namespace:
         "--show-config",
         action="store_true",
         help="実際に送信する RecognitionConfig を標準エラーへ表示",
+    )
+    parser.add_argument(
+        "--batch-output-gcs-uri",
+        help="Batch Recognize の結果を保存する Cloud Storage URI (例: gs://bucket/path)",
+    )
+    parser.add_argument(
+        "--batch-output-save-text",
+        action="store_true",
+        help="Batch Recognize の結果をテキストファイルとして同じバケットに保存",
     )
     parser.add_argument(
         "--preprocess-normalize",
@@ -395,7 +404,23 @@ def build_recognizer_name(project: str, location: str, recognizer_id: str) -> st
 def duration_to_millis(duration) -> Optional[int]:
     if not duration:
         return None
-    return int(duration.seconds * 1000 + duration.nanos / 1_000_000)
+    if isinstance(duration, dict):
+        seconds = float(duration.get("seconds", 0) or 0)
+        nanos = float(duration.get("nanos", 0) or 0)
+        return int(seconds * 1000 + nanos / 1_000_000)
+    if isinstance(duration, str):
+        value = duration.strip()
+        if value.endswith("s"):
+            value = value[:-1]
+        try:
+            return int(float(value) * 1000)
+        except ValueError:
+            return None
+    seconds = getattr(duration, "seconds", None)
+    nanos = getattr(duration, "nanos", None)
+    if seconds is None and nanos is None:
+        return None
+    return int(seconds * 1000 + nanos / 1_000_000)
 
 
 def build_recognition_config(args: argparse.Namespace) -> cloud_speech.RecognitionConfig:
@@ -504,68 +529,19 @@ def recognize_sync(
 
     raise_if_rpc_error(getattr(response, "error", None), recognizer_name, "同期認識")
 
-    segments: List[Segment] = []
-    words: List[Word] = []
-    transcript_parts: List[str] = []
-    language = None
-    last_end_ms = 0
-    cumulative_transcript = ""
-    cumulative_word_count = 0
+    entries: List[Dict] = []
 
     for result in response.results:
         if not result.alternatives:
             continue
         top_alt = result.alternatives[0]
-        language = result.language_code or language
-        end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
-        start_ms = last_end_ms if end_ms is not None else None
-        new_transcript = top_alt.transcript or ""
-        addition = new_transcript
-        if cumulative_transcript and addition.startswith(cumulative_transcript):
-            addition = addition[len(cumulative_transcript) :]
-        elif cumulative_transcript and cumulative_transcript.endswith(addition):
-            addition = ""
-        addition = addition.lstrip("\n\r ")
-        addition = addition.rstrip()
-        if addition:
-            transcript_parts.append(addition)
-            segments.append(
-                Segment(
-                    transcript=addition,
-                    confidence=getattr(top_alt, "confidence", None),
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                )
-            )
-            last_end_ms = end_ms or last_end_ms
-        else:
-            last_end_ms = end_ms or last_end_ms
+        entries.append(entry_from_proto(result, top_alt))
 
-        cumulative_transcript = new_transcript or cumulative_transcript
-
-        current_words = list(getattr(top_alt, "words", []))
-        if current_words:
-            start_index = min(cumulative_word_count, len(current_words))
-            for word_info in current_words[start_index:]:
-                words.append(
-                    Word(
-                        word=word_info.word,
-                        start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                        end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                        speaker_label=getattr(word_info, "speaker_label", None) or None,
-                    )
-                )
-            cumulative_word_count = len(current_words)
-
-    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
-    return TranscriptionResult(
+    return assemble_transcription(
+        entries,
         source=source,
-        transcript=transcript,
-        language_code=language,
         model=config.model,
         mode="sync",
-        segments=segments,
-        words=words,
     )
 
 
@@ -610,14 +586,7 @@ def recognize_streaming(
     except (PermissionDenied, NotFound) as exc:
         handle_speech_exception(exc, recognizer_name)
 
-    segments: List[Segment] = []
-    words: List[Word] = []
-    transcript_parts: List[str] = []
-    language = None
-    last_end_ms = 0
-
-    cumulative_transcript = ""
-    cumulative_word_count = 0
+    entries: List[Dict] = []
 
     try:
         for response in responses:
@@ -627,60 +596,17 @@ def recognize_streaming(
                     continue
                 top_alt = result.alternatives[0]
                 if result.is_final:
-                    language = result.language_code or language
-                    end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
-                    start_ms = last_end_ms if end_ms is not None else None
-                    new_transcript = top_alt.transcript or ""
-                    addition = new_transcript
-                    if cumulative_transcript and addition.startswith(cumulative_transcript):
-                        addition = addition[len(cumulative_transcript) :]
-                    elif cumulative_transcript and cumulative_transcript.endswith(addition):
-                        addition = ""
-                    addition = addition.lstrip("\n\r ")
-                    addition = addition.rstrip()
-                    if addition:
-                        transcript_parts.append(addition)
-                        segments.append(
-                            Segment(
-                                transcript=addition,
-                                confidence=getattr(top_alt, "confidence", None),
-                                start_ms=start_ms,
-                                end_ms=end_ms,
-                            )
-                        )
-                        last_end_ms = end_ms or last_end_ms
-                    else:
-                        last_end_ms = end_ms or last_end_ms
-
-                    cumulative_transcript = new_transcript or cumulative_transcript
-
-                    current_words = list(getattr(top_alt, "words", []))
-                    if current_words:
-                        start_index = min(cumulative_word_count, len(current_words))
-                        for word_info in current_words[start_index:]:
-                            words.append(
-                                Word(
-                                    word=word_info.word,
-                                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                                    speaker_label=getattr(word_info, "speaker_label", None) or None,
-                                )
-                            )
-                        cumulative_word_count = len(current_words)
+                    entries.append(entry_from_proto(result, top_alt))
                 elif interim:
                     print(f"[interim] {top_alt.transcript}", file=sys.stderr)
     except (PermissionDenied, NotFound) as exc:
         handle_speech_exception(exc, recognizer_name)
 
-    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
-    return TranscriptionResult(
+    return assemble_transcription(
+        entries,
         source=str(audio_path),
-        transcript=transcript,
-        language_code=language,
         model=config.model,
         mode="streaming",
-        segments=segments,
-        words=words,
     )
 
 
@@ -690,16 +616,27 @@ def recognize_batch(
     config: cloud_speech.RecognitionConfig,
     source_uri: str,
     timeout: int,
+    output_gcs_uri: Optional[str],
+    storage_client,
 ) -> TranscriptionResult:
     files = [cloud_speech.BatchRecognizeFileMetadata(uri=source_uri)]
+
+    if output_gcs_uri:
+        output_config = cloud_speech.RecognitionOutputConfig(
+            gcs_output_config=cloud_speech.GcsOutputConfig(uri=output_gcs_uri)
+        )
+        if storage_client is None:
+            raise TranscriptionError("GCS 出力を利用するには google-cloud-storage が必要です。")
+    else:
+        output_config = cloud_speech.RecognitionOutputConfig(
+            inline_response_config=cloud_speech.InlineOutputConfig()
+        )
 
     request = cloud_speech.BatchRecognizeRequest(
         recognizer=recognizer_name,
         config=config,
         files=files,
-        recognition_output_config=cloud_speech.RecognitionOutputConfig(
-            inline_response_config=cloud_speech.InlineOutputConfig()
-        ),
+        recognition_output_config=output_config,
     )
 
     try:
@@ -734,73 +671,25 @@ def recognize_batch(
                 f"- 詳細: {message}"
             )
 
-    inline_result = file_result.inline_result
-    if inline_result is None:
-        raise TranscriptionError(
-            "Batch Recognize から結果が得られませんでした。Cloud Logging にエラーが出ていないか確認してください。"
-        )
-
-    transcript_proto = inline_result.transcript
-
-    segments: List[Segment] = []
-    words: List[Word] = []
-    transcript_parts: List[str] = []
-    language = None
-    last_end_ms = 0
-
-    cumulative_transcript = ""
-    cumulative_word_count = 0
-
-    for result in transcript_proto.results:
-        if not result.alternatives:
-            continue
-        top_alt = result.alternatives[0]
-        language = result.language_code or language
-        end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
-        start_ms = last_end_ms if end_ms is not None else None
-        new_transcript = top_alt.transcript or ""
-        addition = new_transcript
-        if cumulative_transcript and addition.startswith(cumulative_transcript):
-            addition = addition[len(cumulative_transcript) :]
-        elif cumulative_transcript and cumulative_transcript.endswith(addition):
-            addition = ""
-        addition = addition.lstrip("\n\r ")
-        addition = addition.rstrip()
-        if addition:
-            transcript_parts.append(addition)
-            segments.append(
-                Segment(
-                    transcript=addition,
-                    confidence=getattr(top_alt, "confidence", None),
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                )
+    if output_gcs_uri:
+        entries = load_batch_entries_from_gcs(storage_client, output_gcs_uri)
+    else:
+        inline_result = file_result.inline_result
+        if inline_result is None:
+            raise TranscriptionError(
+                "Batch Recognize から結果が得られませんでした。Cloud Logging にエラーが出ていないか確認してください。"
             )
-            last_end_ms = end_ms or last_end_ms
-        else:
-            last_end_ms = end_ms or last_end_ms
+        transcript_proto = inline_result.transcript
+        entries = []
+        for result in transcript_proto.results:
+            if not result.alternatives:
+                continue
+            top_alt = result.alternatives[0]
+            entries.append(entry_from_proto(result, top_alt))
 
-        cumulative_transcript = new_transcript or cumulative_transcript
-
-        current_words = list(getattr(top_alt, "words", []))
-        if current_words:
-            start_index = min(cumulative_word_count, len(current_words))
-            for word_info in current_words[start_index:]:
-                words.append(
-                    Word(
-                        word=word_info.word,
-                        start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
-                        end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
-                        speaker_label=getattr(word_info, "speaker_label", None) or None,
-                    )
-                )
-            cumulative_word_count = len(current_words)
-
-    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
-    return TranscriptionResult(
+    return assemble_transcription(
+        entries,
         source=source_uri,
-        transcript=transcript,
-        language_code=language,
         model=config.model,
         mode="batch",
     )
@@ -849,6 +738,209 @@ def render_result(result: TranscriptionResult, fmt: str) -> str:
 
 def write_output(content: str, path: Path) -> None:
     path.write_text(content + "\n", encoding="utf-8")
+
+
+def split_gcs_uri(uri: str) -> tuple[str, str]:
+    if not is_gcs_uri(uri):
+        raise TranscriptionError(f"GCS URI ではありません: {uri}")
+    remainder = uri[5:]
+    if not remainder:
+        raise TranscriptionError(f"GCS URI にバケット名が含まれていません: {uri}")
+    if "/" in remainder:
+        bucket, prefix = remainder.split("/", 1)
+    else:
+        bucket, prefix = remainder, ""
+    return bucket, prefix.strip("/")
+
+
+def entry_from_proto(result, top_alt) -> Dict:
+    return {
+        "transcript": top_alt.transcript or "",
+        "confidence": getattr(top_alt, "confidence", None),
+        "language_code": result.language_code or None,
+        "end_ms": duration_to_millis(getattr(result, "result_end_offset", None)),
+        "words": [
+            {
+                "word": word_info.word,
+                "start_ms": duration_to_millis(getattr(word_info, "start_offset", None)),
+                "end_ms": duration_to_millis(getattr(word_info, "end_offset", None)),
+                "speaker_label": getattr(word_info, "speaker_label", None) or None,
+            }
+            for word_info in getattr(top_alt, "words", [])
+        ],
+    }
+
+
+def entry_from_result_dict(result_dict: Dict) -> Optional[Dict]:
+    alternatives = result_dict.get("alternatives") or []
+    if not alternatives:
+        return None
+    top_alt = alternatives[0] or {}
+    transcript = top_alt.get("transcript") or top_alt.get("display")
+    words_payload = top_alt.get("words") or []
+    words_list = []
+    for word in words_payload:
+        words_list.append(
+            {
+                "word": word.get("word") or word.get("spokenText") or "",
+                "start_ms": duration_to_millis(word.get("startOffset")),
+                "end_ms": duration_to_millis(word.get("endOffset")),
+                "speaker_label": word.get("speakerLabel"),
+            }
+        )
+    return {
+        "transcript": transcript or "",
+        "confidence": top_alt.get("confidence"),
+        "language_code": result_dict.get("languageCode") or top_alt.get("languageCode"),
+        "end_ms": duration_to_millis(result_dict.get("resultEndOffset")),
+        "words": words_list,
+    }
+
+
+def parse_batch_results_text(text: str) -> List[Dict]:
+    payloads: List = []
+    entries: List[Dict] = []
+    try:
+        loaded = json.loads(text)
+        payloads.append(loaded)
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            payloads.append(json.loads(line))
+
+    for payload in payloads:
+        if isinstance(payload, dict):
+            if "results" in payload:
+                for res in payload["results"] or []:
+                    entry = entry_from_result_dict(res or {})
+                    if entry:
+                        entries.append(entry)
+            else:
+                entry = entry_from_result_dict(payload)
+                if entry:
+                    entries.append(entry)
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    entry = entry_from_result_dict(item)
+                    if entry:
+                        entries.append(entry)
+    return entries
+
+
+def assemble_transcription(
+    entries: List[Dict],
+    *,
+    source: str,
+    model: str,
+    mode: str,
+) -> TranscriptionResult:
+    segments: List[Segment] = []
+    words: List[Word] = []
+    transcript_parts: List[str] = []
+    language = None
+    last_end_ms = 0
+    cumulative_transcript = ""
+    cumulative_word_count = 0
+
+    for entry in entries:
+        transcript = entry.get("transcript") or ""
+        if entry.get("language_code"):
+            language = entry["language_code"]
+        end_ms = entry.get("end_ms")
+        start_ms = last_end_ms if end_ms is not None else None
+
+        addition = transcript
+        if cumulative_transcript and addition.startswith(cumulative_transcript):
+            addition = addition[len(cumulative_transcript) :]
+        elif cumulative_transcript and cumulative_transcript.endswith(addition):
+            addition = ""
+        addition = addition.lstrip("\n\r ")
+        addition = addition.rstrip()
+
+        if addition:
+            transcript_parts.append(addition)
+            segments.append(
+                Segment(
+                    transcript=addition,
+                    confidence=entry.get("confidence"),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
+            )
+
+        if end_ms is not None:
+            last_end_ms = end_ms
+
+        cumulative_transcript = transcript or cumulative_transcript
+
+        words_payload = entry.get("words") or []
+        if words_payload:
+            start_index = min(cumulative_word_count, len(words_payload))
+            for word_info in words_payload[start_index:]:
+                words.append(
+                    Word(
+                        word=word_info.get("word") or "",
+                        start_ms=word_info.get("start_ms"),
+                        end_ms=word_info.get("end_ms"),
+                        speaker_label=word_info.get("speaker_label"),
+                    )
+                )
+            cumulative_word_count = len(words_payload)
+
+    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
+    return TranscriptionResult(
+        source=source,
+        transcript=transcript,
+        language_code=language,
+        model=model,
+        mode=mode,
+        segments=segments,
+        words=words,
+    )
+
+
+def load_batch_entries_from_gcs(storage_client, output_uri: str) -> List[Dict]:
+    bucket_name, prefix = split_gcs_uri(output_uri)
+    prefix = f"{prefix}/" if prefix and not prefix.endswith("/") else prefix
+    blobs = list(storage_client.list_blobs(bucket_or_name=bucket_name, prefix=prefix))
+    if not blobs:
+        raise TranscriptionError(
+            f"GCS 出力 ({output_uri}) から結果ファイルを取得できませんでした。"
+        )
+    candidate_blobs = [
+        blob for blob in blobs if blob.name.endswith(".json") or blob.name.endswith(".jsonl")
+    ]
+    if not candidate_blobs:
+        candidate_blobs = blobs
+    candidate_blobs.sort(key=lambda b: b.name)
+
+    entries: List[Dict] = []
+    for blob in candidate_blobs:
+        text = blob.download_as_text(encoding="utf-8")
+        parsed = parse_batch_results_text(text)
+        if parsed:
+            entries.extend(parsed)
+    if not entries:
+        raise TranscriptionError(
+            f"GCS 出力 ({output_uri}) の解析に失敗しました。生成されたファイルの形式をご確認ください。"
+        )
+    return entries
+
+
+def upload_transcript_to_gcs(storage_client, output_uri: str, transcript: str) -> str:
+    bucket_name, prefix = split_gcs_uri(output_uri)
+    bucket = storage_client.bucket(bucket_name)
+    base_prefix = prefix.rstrip("/")
+    if not base_prefix:
+        object_name = "transcript.txt"
+    else:
+        object_name = f"{base_prefix}_transcript.txt"
+    blob = bucket.blob(object_name)
+    blob.upload_from_string(transcript, content_type="text/plain; charset=utf-8")
+    return f"gs://{bucket_name}/{object_name}"
 
 
 def preprocess_required(args: argparse.Namespace) -> bool:
@@ -983,6 +1075,9 @@ def main() -> int:
 
     ensure_output_dir(args.output_dir)
 
+    if args.batch_output_gcs_uri:
+        split_gcs_uri(args.batch_output_gcs_uri)
+
     uploaded_uris: List[str] = []
     storage_client = None
     default_bucket_name: Optional[str] = None
@@ -1026,6 +1121,7 @@ def main() -> int:
                 raise TranscriptionError("ストリーミング認識では gs:// URI を直接指定できません。ローカルにダウンロードしてください。")
 
             if mode == "batch":
+                uploaded_for_job = False
                 if storage_client is None:
                     try:
                         from google.cloud import storage
@@ -1058,6 +1154,29 @@ def main() -> int:
                     uploaded_uri = upload_to_gcs(effective_local_path, target_bucket, args.upload_prefix, storage_client)
                     uploaded_uris.append(uploaded_uri)
                     source_uri = uploaded_uri
+                    uploaded_for_job = True
+
+                batch_output_uri = args.batch_output_gcs_uri
+                auto_output = False
+                if not batch_output_uri and uploaded_for_job:
+                    try:
+                        bucket_name, object_path = split_gcs_uri(source_uri)
+                    except TranscriptionError:
+                        bucket_name = None
+                        object_path = ""
+                    if bucket_name and storage_client is not None:
+                        parent_dir = object_path.rsplit("/", 1)[0] if "/" in object_path else ""
+                        if parent_dir:
+                            result_prefix = f"{parent_dir}/results"
+                        else:
+                            result_prefix = "results"
+                        timestamp_ms = int(time.time() * 1000)
+                        if original_local_path is not None:
+                            base_name = original_local_path.stem or "result"
+                        else:
+                            base_name = Path(audio).stem or "result"
+                        batch_output_uri = f"gs://{bucket_name}/{result_prefix}/{base_name}_{timestamp_ms}"
+                        auto_output = True
 
                 result = recognize_batch(
                     client,
@@ -1065,7 +1184,27 @@ def main() -> int:
                     config,
                     source_uri,
                     timeout=args.batch_timeout,
+                    output_gcs_uri=batch_output_uri,
+                    storage_client=storage_client,
                 )
+                if batch_output_uri:
+                    notice = "Batch 結果を Cloud Storage"
+                    if auto_output:
+                        notice += " (自動指定)"
+                    notice += f" ({batch_output_uri}) から取得しました。"
+                    print(notice, file=sys.stderr)
+                    if args.batch_output_save_text:
+                        try:
+                            text_uri = upload_transcript_to_gcs(storage_client, batch_output_uri, result.transcript or "")
+                        except TranscriptionError as exc:
+                            print(f"警告: テキストを GCS へ保存できませんでした: {exc}", file=sys.stderr)
+                        else:
+                            print(f"Batch テキスト結果を Cloud Storage ({text_uri}) に保存しました。", file=sys.stderr)
+                elif args.batch_output_save_text:
+                    print(
+                        "警告: --batch-output-save-text が指定されていますが、結果を出力する GCS URI がありません。",
+                        file=sys.stderr,
+                    )
             elif mode == "sync":
                 if is_gcs_uri(source_uri):
                     result = recognize_sync(client, recognizer_name, config, source_uri, None)
