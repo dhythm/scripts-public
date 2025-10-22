@@ -20,4 +20,6 @@ dependencies = [
     "playwright>=1.47.0",
     "openai>=1.51.0",
     "python-dotenv>=1.0.1",
+    "google-cloud-speech>=2.27.0",
+    "google-cloud-storage>=2.18.0",
 ]

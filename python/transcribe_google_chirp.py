@@ -1,0 +1,673 @@
+#!/usr/bin/env python3
+"""Google Cloud Speech-to-Text v2 (Chirp 3) transcription CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable, List, Optional
+
+from google.api_core.client_options import ClientOptions
+from google.cloud import speech_v2
+from google.cloud.speech_v2.types import cloud_speech
+
+
+@dataclass
+class Segment:
+    transcript: str
+    confidence: Optional[float]
+    start_ms: Optional[int]
+    end_ms: Optional[int]
+
+
+@dataclass
+class Word:
+    word: str
+    start_ms: Optional[int]
+    end_ms: Optional[int]
+    speaker_label: Optional[str]
+
+
+@dataclass
+class TranscriptionResult:
+    source: str
+    transcript: str
+    language_code: Optional[str]
+    model: str
+    mode: str
+    segments: List[Segment] = field(default_factory=list)
+    words: List[Word] = field(default_factory=list)
+
+
+class TranscriptionError(RuntimeError):
+    """Wraps recoverable transcription failures."""
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Google Cloud Speech-to-Text v2 (Chirp 3) 日本語対応文字起こしツール"
+    )
+    parser.add_argument("audio", nargs="+", help="入力音声ファイルまたは gs:// URI (複数可)")
+    parser.add_argument("--project", help="GCP プロジェクト ID (未指定時は GOOGLE_CLOUD_PROJECT を参照)")
+    parser.add_argument("--location", default="us", help="Chirp 3 対応リージョン (例: us, eu, asia-northeast1)")
+    parser.add_argument("--recognizer", default="_", help="使用する Recognizer ID (デフォルトは暗黙の _)")
+    parser.add_argument("--model", default="chirp_3", help="使用するモデル ID")
+    parser.add_argument(
+        "--mode",
+        choices=("auto", "sync", "streaming", "batch"),
+        default="auto",
+        help="処理モード (auto はファイルサイズで同期/バッチを自動選択)",
+    )
+    parser.add_argument(
+        "--sync-max-bytes",
+        type=int,
+        default=10 * 1024 * 1024,
+        help="auto モードで同期認識を使う最大バイト数",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=15_000,
+        help="ストリーミング時のチャンクサイズ (最大 15 KB を推奨)",
+    )
+    parser.add_argument(
+        "--language-codes",
+        nargs="+",
+        default=["ja-JP"],
+        help="期待する言語コード (複数指定可)",
+    )
+    parser.add_argument(
+        "--auto-language",
+        action="store_true",
+        help="言語自動検出を有効化 (language_codes を上書きして ['auto'] を使用)",
+    )
+    parser.add_argument("--max-alternatives", type=int, default=1, help="候補出力数")
+    parser.add_argument("--profanity-filter", action="store_true", help="NG ワードを伏字化")
+    parser.add_argument(
+        "--enable-word-time-offsets",
+        action="store_true",
+        help="単語レベルのタイムスタンプ出力を要求",
+    )
+    parser.add_argument(
+        "--disable-auto-punctuation",
+        action="store_true",
+        help="自動句読点を無効化",
+    )
+    parser.add_argument(
+        "--enable-spoken-punctuation",
+        action="store_true",
+        help="話し言葉の句読点を記号に変換",
+    )
+    parser.add_argument(
+        "--enable-spoken-emojis", action="store_true", help="話し言葉の絵文字を記号化"
+    )
+    parser.add_argument(
+        "--denoise-audio",
+        action="store_true",
+        help="API 内蔵のデノイザーを有効化",
+    )
+    parser.add_argument(
+        "--snr-threshold",
+        type=float,
+        help="SNR フィルタ閾値 (denoise と併用可)",
+    )
+    parser.add_argument(
+        "--phrase",
+        action="append",
+        default=[],
+        help="適応 (Speech Adaptation) 用のフレーズ。複数指定可",
+    )
+    parser.add_argument(
+        "--phrase-boost",
+        type=float,
+        default=10.0,
+        help="適応フレーズのブースト値 (0-20 推奨)",
+    )
+    parser.add_argument(
+        "--interim-results",
+        action="store_true",
+        help="ストリーミング時に途中結果を標準エラーへ表示",
+    )
+    parser.add_argument(
+        "--upload-bucket",
+        help="Batch モード時にローカル音声をアップロードする Cloud Storage バケット名",
+    )
+    parser.add_argument(
+        "--upload-prefix",
+        default="transcribe",
+        help="Cloud Storage アップロード時のオブジェクト接頭辞",
+    )
+    parser.add_argument(
+        "--batch-timeout",
+        type=int,
+        default=6 * 3600,
+        help="Batch Recognize の待機秒数",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="単一ファイル処理時の出力パス。複数入力の場合は --output-dir を使用",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="複数入力時の個別出力ディレクトリ (存在しなければ作成)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="出力形式 (text は純テキスト, json は詳細情報含む)",
+    )
+    parser.add_argument(
+        "--show-config",
+        action="store_true",
+        help="実際に送信する RecognitionConfig を標準エラーへ表示",
+    )
+    return parser.parse_args()
+
+
+SUPPORTED_FORMATS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma"}
+
+
+def is_gcs_uri(value: str) -> bool:
+    return value.startswith("gs://")
+
+
+def validate_local_audio(file_path: Path) -> None:
+    if not file_path.exists():
+        raise TranscriptionError(f"ファイルが見つかりません: {file_path}")
+    if not file_path.is_file():
+        raise TranscriptionError(f"ファイルではありません: {file_path}")
+    if file_path.suffix.lower() not in SUPPORTED_FORMATS:
+        raise TranscriptionError(
+            "サポートされていないファイル形式です: "
+            f"{file_path.suffix}. 利用可能な拡張子: {', '.join(sorted(SUPPORTED_FORMATS))}"
+        )
+
+
+def resolve_project(args: argparse.Namespace) -> str:
+    project = args.project or os.getenv("GOOGLE_CLOUD_PROJECT")
+    if not project:
+        raise TranscriptionError(
+            "プロジェクト ID が見つかりません。--project か GOOGLE_CLOUD_PROJECT を設定してください。"
+        )
+    return project
+
+
+def make_client(location: str) -> speech_v2.SpeechClient:
+    endpoint = "speech.googleapis.com" if location == "global" else f"{location}-speech.googleapis.com"
+    return speech_v2.SpeechClient(client_options=ClientOptions(api_endpoint=endpoint))
+
+
+def build_recognizer_name(project: str, location: str, recognizer_id: str) -> str:
+    if recognizer_id.startswith("projects/"):
+        return recognizer_id
+    return f"projects/{project}/locations/{location}/recognizers/{recognizer_id}"
+
+
+def duration_to_millis(duration) -> Optional[int]:
+    if not duration:
+        return None
+    return int(duration.seconds * 1000 + duration.nanos / 1_000_000)
+
+
+def build_recognition_config(args: argparse.Namespace) -> cloud_speech.RecognitionConfig:
+    language_codes = ["auto"] if args.auto_language else args.language_codes
+
+    features = cloud_speech.RecognitionFeatures(
+        profanity_filter=args.profanity_filter,
+        enable_word_time_offsets=args.enable_word_time_offsets,
+        enable_automatic_punctuation=not args.disable_auto_punctuation,
+        enable_spoken_punctuation=args.enable_spoken_punctuation,
+        enable_spoken_emojis=args.enable_spoken_emojis,
+        max_alternatives=args.max_alternatives,
+    )
+
+    adaptation = None
+    if args.phrase:
+        phrases = []
+        for phrase in args.phrase:
+            entry = {"value": phrase}
+            if args.phrase_boost is not None:
+                entry["boost"] = args.phrase_boost
+            phrases.append(entry)
+        adaptation = cloud_speech.SpeechAdaptation(
+            phrase_sets=[
+                cloud_speech.SpeechAdaptation.AdaptationPhraseSet(
+                    inline_phrase_set=cloud_speech.PhraseSet(phrases=phrases)
+                )
+            ]
+        )
+
+    denoiser = None
+    if args.denoise_audio or args.snr_threshold is not None:
+        denoiser = cloud_speech.DenoiserConfig(
+            denoise_audio=args.denoise_audio, snr_threshold=args.snr_threshold or 0.0
+        )
+
+    config = cloud_speech.RecognitionConfig(
+        auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+        language_codes=language_codes,
+        model=args.model,
+        features=features,
+        adaptation=adaptation,
+        denoiser_config=denoiser,
+    )
+
+    if args.show_config:
+        json_config = cloud_speech.RecognitionConfig.to_json(config)
+        print(json.dumps(json.loads(json_config), ensure_ascii=False, indent=2), file=sys.stderr)
+
+    return config
+
+
+def read_file(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def choose_mode(args: argparse.Namespace, source: str, local_path: Optional[Path]) -> str:
+    if args.mode != "auto":
+        return args.mode
+    if is_gcs_uri(source):
+        return "batch"
+    if not local_path:
+        return "batch"
+    size = local_path.stat().st_size
+    return "sync" if size <= args.sync_max_bytes else "batch"
+
+
+def upload_to_gcs(local_path: Path, bucket: str, prefix: str) -> str:
+    try:
+        from google.cloud import storage
+    except ImportError as exc:  # pragma: no cover
+        raise TranscriptionError(
+            "google-cloud-storage がインストールされていません。uv sync を実行してください。"
+        ) from exc
+
+    client = storage.Client()
+    bucket_obj = client.bucket(bucket)
+    timestamp = int(time.time())
+    trimmed_prefix = prefix.strip("/")
+    object_name = f"{trimmed_prefix}/{timestamp}_{local_path.name}" if trimmed_prefix else f"{timestamp}_{local_path.name}"
+    blob = bucket_obj.blob(object_name)
+    blob.upload_from_filename(str(local_path))
+    return f"gs://{bucket}/{object_name}"
+
+
+def recognize_sync(
+    client: speech_v2.SpeechClient,
+    recognizer_name: str,
+    config: cloud_speech.RecognitionConfig,
+    source: str,
+    local_path: Optional[Path],
+) -> TranscriptionResult:
+    if local_path:
+        content = read_file(local_path)
+        request = cloud_speech.RecognizeRequest(
+            recognizer=recognizer_name,
+            config=config,
+            content=content,
+        )
+    else:
+        request = cloud_speech.RecognizeRequest(
+            recognizer=recognizer_name,
+            config=config,
+            uri=source,
+        )
+
+    response = client.recognize(request=request)
+
+    segments: List[Segment] = []
+    words: List[Word] = []
+    transcript_parts: List[str] = []
+    language = None
+    last_end_ms = 0
+
+    for result in response.results:
+        if not result.alternatives:
+            continue
+        top_alt = result.alternatives[0]
+        transcript_parts.append(top_alt.transcript)
+        language = result.language_code or language
+        end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
+        start_ms = last_end_ms if end_ms is not None else None
+        segments.append(
+            Segment(
+                transcript=top_alt.transcript,
+                confidence=getattr(top_alt, "confidence", None),
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
+        last_end_ms = end_ms or last_end_ms
+        for word_info in getattr(top_alt, "words", []):
+            words.append(
+                Word(
+                    word=word_info.word,
+                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                    speaker_label=getattr(word_info, "speaker_label", None) or None,
+                )
+            )
+
+    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
+    return TranscriptionResult(
+        source=source,
+        transcript=transcript,
+        language_code=language,
+        model=config.model,
+        mode="sync",
+        segments=segments,
+        words=words,
+    )
+
+
+def stream_requests(
+    audio_path: Path,
+    recognizer_name: str,
+    config: cloud_speech.RecognitionConfig,
+    chunk_size: int,
+    interim: bool,
+) -> Iterable[cloud_speech.StreamingRecognizeRequest]:
+    streaming_config = cloud_speech.StreamingRecognitionConfig(
+        config=config,
+        streaming_features=cloud_speech.StreamingRecognitionFeatures(
+            interim_results=interim,
+            enable_voice_activity_events=False,
+        ),
+    )
+    yield cloud_speech.StreamingRecognizeRequest(
+        recognizer=recognizer_name, streaming_config=streaming_config
+    )
+
+    with audio_path.open("rb") as audio_file:
+        while True:
+            chunk = audio_file.read(chunk_size)
+            if not chunk:
+                break
+            yield cloud_speech.StreamingRecognizeRequest(audio=chunk)
+
+
+def recognize_streaming(
+    client: speech_v2.SpeechClient,
+    recognizer_name: str,
+    config: cloud_speech.RecognitionConfig,
+    audio_path: Path,
+    chunk_size: int,
+    interim: bool,
+) -> TranscriptionResult:
+    responses = client.streaming_recognize(
+        requests=stream_requests(audio_path, recognizer_name, config, chunk_size, interim)
+    )
+
+    segments: List[Segment] = []
+    words: List[Word] = []
+    transcript_parts: List[str] = []
+    language = None
+    last_end_ms = 0
+
+    for response in responses:
+        for result in response.results:
+            if not result.alternatives:
+                continue
+            top_alt = result.alternatives[0]
+            if result.is_final:
+                transcript_parts.append(top_alt.transcript)
+                language = result.language_code or language
+                end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
+                start_ms = last_end_ms if end_ms is not None else None
+                segments.append(
+                    Segment(
+                        transcript=top_alt.transcript,
+                        confidence=getattr(top_alt, "confidence", None),
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                    )
+                )
+                last_end_ms = end_ms or last_end_ms
+                for word_info in getattr(top_alt, "words", []):
+                    words.append(
+                        Word(
+                            word=word_info.word,
+                            start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                            end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                            speaker_label=getattr(word_info, "speaker_label", None) or None,
+                        )
+                    )
+            elif interim:
+                print(f"[interim] {top_alt.transcript}", file=sys.stderr)
+
+    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
+    return TranscriptionResult(
+        source=str(audio_path),
+        transcript=transcript,
+        language_code=language,
+        model=config.model,
+        mode="streaming",
+        segments=segments,
+        words=words,
+    )
+
+
+def recognize_batch(
+    client: speech_v2.SpeechClient,
+    recognizer_name: str,
+    config: cloud_speech.RecognitionConfig,
+    source_uri: str,
+    timeout: int,
+) -> TranscriptionResult:
+    files = [cloud_speech.BatchRecognizeFileMetadata(uri=source_uri)]
+
+    request = cloud_speech.BatchRecognizeRequest(
+        recognizer=recognizer_name,
+        config=config,
+        files=files,
+        recognition_output_config=cloud_speech.RecognitionOutputConfig(
+            inline_response_config=cloud_speech.InlineOutputConfig()
+        ),
+    )
+
+    operation = client.batch_recognize(request=request)
+    response = operation.result(timeout=timeout)
+
+    if not response.results:
+        return TranscriptionResult(
+            source=source_uri,
+            transcript="",
+            language_code=None,
+            model=config.model,
+            mode="batch",
+        )
+
+    file_result = next(iter(response.results.values()))
+    inline_result = file_result.inline_result
+    transcript_proto = inline_result.transcript
+
+    segments: List[Segment] = []
+    words: List[Word] = []
+    transcript_parts: List[str] = []
+    language = None
+    last_end_ms = 0
+
+    for result in transcript_proto.results:
+        if not result.alternatives:
+            continue
+        top_alt = result.alternatives[0]
+        transcript_parts.append(top_alt.transcript)
+        language = result.language_code or language
+        end_ms = duration_to_millis(getattr(result, "result_end_offset", None))
+        start_ms = last_end_ms if end_ms is not None else None
+        segments.append(
+            Segment(
+                transcript=top_alt.transcript,
+                confidence=getattr(top_alt, "confidence", None),
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
+        last_end_ms = end_ms or last_end_ms
+        for word_info in getattr(top_alt, "words", []):
+            words.append(
+                Word(
+                    word=word_info.word,
+                    start_ms=duration_to_millis(getattr(word_info, "start_offset", None)),
+                    end_ms=duration_to_millis(getattr(word_info, "end_offset", None)),
+                    speaker_label=getattr(word_info, "speaker_label", None) or None,
+                )
+            )
+
+    transcript = "\n".join(part.strip() for part in transcript_parts if part.strip())
+    return TranscriptionResult(
+        source=source_uri,
+        transcript=transcript,
+        language_code=language,
+        model=config.model,
+        mode="batch",
+    )
+
+
+def ensure_output_dir(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def render_result(result: TranscriptionResult, fmt: str) -> str:
+    if fmt == "text":
+        lines = []
+        if result.transcript:
+            lines.append(result.transcript.strip())
+        return "\n".join(lines)
+
+    payload = {
+        "source": result.source,
+        "mode": result.mode,
+        "model": result.model,
+        "language_code": result.language_code,
+        "transcript": result.transcript,
+        "segments": [
+            {
+                "transcript": segment.transcript,
+                "confidence": segment.confidence,
+                "start_ms": segment.start_ms,
+                "end_ms": segment.end_ms,
+            }
+            for segment in result.segments
+        ],
+        "words": [
+            {
+                "word": word.word,
+                "start_ms": word.start_ms,
+                "end_ms": word.end_ms,
+                "speaker_label": word.speaker_label,
+            }
+            for word in result.words
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def write_output(content: str, path: Path) -> None:
+    path.write_text(content + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    args = parse_args()
+
+    if args.output and len(args.audio) > 1:
+        raise TranscriptionError("複数ファイル処理時は --output ではなく --output-dir を使用してください。")
+
+    project = resolve_project(args)
+    client = make_client(args.location)
+    recognizer_name = build_recognizer_name(project, args.location, args.recognizer)
+    config = build_recognition_config(args)
+
+    ensure_output_dir(args.output_dir)
+
+    uploaded_uris: List[str] = []
+
+    for audio in args.audio:
+        local_path: Optional[Path] = None
+        source_uri: Optional[str] = None
+
+        if is_gcs_uri(audio):
+            source_uri = audio
+        else:
+            local_path = Path(audio)
+            validate_local_audio(local_path)
+            source_uri = str(local_path)
+
+        mode = choose_mode(args, source_uri, local_path)
+
+        if mode == "streaming" and source_uri.startswith("gs://"):
+            raise TranscriptionError("ストリーミング認識では gs:// URI を直接指定できません。ローカルにダウンロードしてください。")
+
+        if mode == "batch":
+            if not is_gcs_uri(source_uri):
+                if not args.upload_bucket:
+                    raise TranscriptionError(
+                        "Batch 認識を行うには gs:// URI または --upload-bucket の指定が必要です。"
+                    )
+                uploaded_uri = upload_to_gcs(Path(source_uri), args.upload_bucket, args.upload_prefix)
+                uploaded_uris.append(uploaded_uri)
+                source_uri = uploaded_uri
+
+            result = recognize_batch(
+                client,
+                recognizer_name,
+                config,
+                source_uri,
+                timeout=args.batch_timeout,
+            )
+        elif mode == "sync":
+            if is_gcs_uri(source_uri):
+                result = recognize_sync(client, recognizer_name, config, source_uri, None)
+            else:
+                result = recognize_sync(client, recognizer_name, config, source_uri, Path(source_uri))
+        elif mode == "streaming":
+            if not local_path:
+                raise TranscriptionError("ストリーミングはローカルファイルのみ対応しています。")
+            result = recognize_streaming(
+                client,
+                recognizer_name,
+                config,
+                local_path,
+                chunk_size=args.chunk_size,
+                interim=args.interim_results,
+            )
+        else:
+            raise TranscriptionError(f"未知のモードです: {mode}")
+
+        output_text = render_result(result, args.format)
+
+        if args.output:
+            write_output(output_text, args.output)
+        elif args.output_dir:
+            suffix = ".json" if args.format == "json" else ".txt"
+            target = args.output_dir / (Path(audio).stem + suffix)
+            write_output(output_text, target)
+        else:
+            print(f"=== {audio} ({result.mode}) ===")
+            if output_text:
+                print(output_text)
+
+    if uploaded_uris:
+        joined = "\n".join(uploaded_uris)
+        print("アップロード済みの Cloud Storage URI:", file=sys.stderr)
+        print(joined, file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except TranscriptionError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        raise SystemExit(1)

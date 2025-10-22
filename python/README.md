@@ -179,6 +179,51 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 | `--word_timestamps` | 単語レベルのタイムスタンプ |
 | `--confidence` | 信頼度情報を含める |
 
+### 3. Google Cloud Speech-to-Text v2 Chirp 3版 (transcribe_google_chirp.py)
+
+Google Cloud Speech-to-Text v2 の最新モデル **Chirp 3** を利用した日本語向け文字起こしツールです。Google Cloud の認証情報と課金設定が必要です。
+
+#### 事前準備
+
+- `GOOGLE_APPLICATION_CREDENTIALS` でサービスアカウント JSON を指定
+- `GOOGLE_CLOUD_PROJECT` もしくは `--project` でプロジェクト ID を指定
+- Chirp 3 が利用可能なリージョン (例: `us`, `eu`, `asia-northeast1`, `asia-southeast1`) を選択
+- Batch Recognize では Google Cloud Storage の `gs://` URI が必須（ローカル音声は自動アップロードに対応）
+- `uv sync` を実行して依存関係 (`google-cloud-speech`, `google-cloud-storage`) をインストール
+
+#### 基本的な使用方法
+
+```sh
+# 1分未満の音声を同期認識で処理
+uv run python transcribe_google_chirp.py audio.m4a \
+  --project my-project --location asia-northeast1 --output transcript.txt
+
+# 5分程度までの音声をストリーミング認識で処理し、途中結果を表示
+uv run python transcribe_google_chirp.py meeting.mp3 \
+  --mode streaming --interim-results --language-codes ja-JP \
+  --project my-project --location us --format json --output transcript.json
+
+# 1時間規模の音声を Batch Recognize で処理（ローカルファイルをGCSへ自動アップロード）
+uv run python transcribe_google_chirp.py long_form.wav \
+  --mode batch --upload-bucket my-bucket --upload-prefix transcripts \
+  --project my-project --location us --format json --output long_form.json
+
+# 専門用語を強調するフレーズアダプテーションの例
+uv run python transcribe_google_chirp.py lecture.wav \
+  --phrase "ソフトバンク" --phrase "生成AI" --phrase-boost 18 \
+  --project my-project --location us
+```
+
+#### 主なオプション
+
+- `--mode`: `auto` は10MB以下を同期、それ以上は自動で Batch Recognize に切り替え（1時間までの長尺処理に対応）
+- `--language-codes`: 言語コードを明示指定。`--auto-language` で自動検出
+- `--enable-word-time-offsets`: 単語レベルのタイムスタンプを取得（同期・ストリーミング・バッチで使用可能）
+- `--denoise-audio` / `--snr-threshold`: 内蔵デノイザーと SNR フィルタを有効化し雑音を抑制
+- `--phrase`: Speech Adaptation で固有名詞などを強調し、認識精度を向上
+
+> **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。
+
 ##### モデル・処理オプション
 
 | オプション | 説明 | デフォルト |
