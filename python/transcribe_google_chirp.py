@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from google.api_core.client_options import ClientOptions
+from google.api_core.exceptions import Conflict, NotFound
 from google.cloud import speech_v2
 from google.cloud.speech_v2.types import cloud_speech
 
@@ -54,7 +56,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("audio", nargs="+", help="入力音声ファイルまたは gs:// URI (複数可)")
     parser.add_argument("--project", help="GCP プロジェクト ID (未指定時は GOOGLE_CLOUD_PROJECT を参照)")
-    parser.add_argument("--location", default="us", help="Chirp 3 対応リージョン (例: us, eu, asia-northeast1)")
+    parser.add_argument(
+        "--location",
+        default="asia-northeast1",
+        help="Chirp 3 対応リージョン (デフォルト: asia-northeast1=東京)",
+    )
     parser.add_argument("--recognizer", default="_", help="使用する Recognizer ID (デフォルトは暗黙の _)")
     parser.add_argument("--model", default="chirp_3", help="使用するモデル ID")
     parser.add_argument(
@@ -179,6 +185,45 @@ def is_gcs_uri(value: str) -> bool:
     return value.startswith("gs://")
 
 
+def sanitize_bucket_component(value: str) -> str:
+    chars = [ch.lower() if ch.isalnum() else "-" for ch in value]
+    sanitized = "".join(chars).strip("-")
+    sanitized = "-".join(filter(None, sanitized.split("-")))
+    return sanitized or "default"
+
+
+def derive_default_bucket_name(project: str, location: str) -> str:
+    project_part = sanitize_bucket_component(project)
+    location_part = sanitize_bucket_component(location or "us")
+    digest = hashlib.sha1(f"{project}:{location}".encode("utf-8")).hexdigest()[:8]
+    base_prefix = f"chirp-transcribe-{location_part}" if location_part else "chirp-transcribe"
+    max_project_len = max(1, 63 - len(base_prefix) - len(digest) - 2)
+    project_part = project_part[:max_project_len].strip("-")
+    if project_part:
+        name = f"{base_prefix}-{project_part}-{digest}"
+    else:
+        name = f"{base_prefix}-{digest}"
+    return name.strip("-")[:63]
+
+
+def ensure_bucket_exists(storage_client, bucket_name: str, location: str) -> bool:
+    try:
+        storage_client.get_bucket(bucket_name)
+        return False
+    except NotFound:
+        bucket = storage_client.bucket(bucket_name)
+        try:
+            normalized_location = (location or "US").upper() if len(location or "") <= 2 else (location or "US")
+            if normalized_location.lower() == "global":
+                normalized_location = "US"
+            storage_client.create_bucket(bucket, location=normalized_location)
+        except Conflict as exc:  # pragma: no cover
+            raise TranscriptionError(
+                f"バケット {bucket_name} を作成できませんでした。別名を --upload-bucket で指定してください。"
+            ) from exc
+        return True
+
+
 def validate_local_audio(file_path: Path) -> None:
     if not file_path.exists():
         raise TranscriptionError(f"ファイルが見つかりません: {file_path}")
@@ -192,12 +237,42 @@ def validate_local_audio(file_path: Path) -> None:
 
 
 def resolve_project(args: argparse.Namespace) -> str:
-    project = args.project or os.getenv("GOOGLE_CLOUD_PROJECT")
-    if not project:
-        raise TranscriptionError(
-            "プロジェクト ID が見つかりません。--project か GOOGLE_CLOUD_PROJECT を設定してください。"
-        )
-    return project
+    project = args.project or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT")
+    if project:
+        return project
+
+    try:
+        from google.auth import default as google_auth_default  # type: ignore
+        from google.auth.exceptions import DefaultCredentialsError  # type: ignore
+    except ImportError:  # pragma: no cover
+        google_auth_default = None
+        DefaultCredentialsError = Exception  # type: ignore
+
+    if google_auth_default is not None:
+        try:
+            _, inferred_project = google_auth_default()
+            if inferred_project:
+                return inferred_project
+        except DefaultCredentialsError:
+            pass
+
+    cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if cred_path:
+        cred_file = Path(cred_path)
+        if cred_file.exists():
+            try:
+                payload = json.loads(cred_file.read_text())
+                project = payload.get("project_id") or payload.get("projectId")
+                if project:
+                    return project
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TranscriptionError(
+                    f"サービスアカウント JSON を読み込めませんでした: {cred_path}: {exc}"
+                ) from exc
+
+    raise TranscriptionError(
+        "プロジェクト ID が見つかりません。--project 指定、環境変数 GOOGLE_CLOUD_PROJECT 設定、またはプロジェクトを含むサービスアカウント JSON を用意してください。"
+    )
 
 
 def make_client(location: str) -> speech_v2.SpeechClient:
@@ -282,16 +357,11 @@ def choose_mode(args: argparse.Namespace, source: str, local_path: Optional[Path
     return "sync" if size <= args.sync_max_bytes else "batch"
 
 
-def upload_to_gcs(local_path: Path, bucket: str, prefix: str) -> str:
-    try:
-        from google.cloud import storage
-    except ImportError as exc:  # pragma: no cover
-        raise TranscriptionError(
-            "google-cloud-storage がインストールされていません。uv sync を実行してください。"
-        ) from exc
+def upload_to_gcs(local_path: Path, bucket: str, prefix: str, storage_client) -> str:
+    if storage_client is None:  # pragma: no cover
+        raise TranscriptionError("Cloud Storage クライアントが初期化されていません。")
 
-    client = storage.Client()
-    bucket_obj = client.bucket(bucket)
+    bucket_obj = storage_client.bucket(bucket)
     timestamp = int(time.time())
     trimmed_prefix = prefix.strip("/")
     object_name = f"{trimmed_prefix}/{timestamp}_{local_path.name}" if trimmed_prefix else f"{timestamp}_{local_path.name}"
@@ -591,6 +661,9 @@ def main() -> int:
     ensure_output_dir(args.output_dir)
 
     uploaded_uris: List[str] = []
+    storage_client = None
+    default_bucket_name: Optional[str] = None
+    bucket_notices = set()
 
     for audio in args.audio:
         local_path: Optional[Path] = None
@@ -609,12 +682,36 @@ def main() -> int:
             raise TranscriptionError("ストリーミング認識では gs:// URI を直接指定できません。ローカルにダウンロードしてください。")
 
         if mode == "batch":
-            if not is_gcs_uri(source_uri):
-                if not args.upload_bucket:
+            if storage_client is None:
+                try:
+                    from google.cloud import storage
+                except ImportError as exc:  # pragma: no cover
                     raise TranscriptionError(
-                        "Batch 認識を行うには gs:// URI または --upload-bucket の指定が必要です。"
-                    )
-                uploaded_uri = upload_to_gcs(Path(source_uri), args.upload_bucket, args.upload_prefix)
+                        "google-cloud-storage がインストールされていません。uv sync を実行してください。"
+                    ) from exc
+                storage_client = storage.Client(project=project)
+
+            if args.upload_bucket:
+                target_bucket = args.upload_bucket
+            else:
+                if default_bucket_name is None:
+                    default_bucket_name = derive_default_bucket_name(project, args.location)
+                target_bucket = default_bucket_name
+
+            bucket_created = ensure_bucket_exists(storage_client, target_bucket, args.location)
+            if target_bucket not in bucket_notices:
+                message = (
+                    f"Batch処理用にバケット {target_bucket} を新規作成しました。"
+                    if bucket_created
+                    else f"Batch処理用にバケット {target_bucket} を使用します。"
+                )
+                print(message, file=sys.stderr)
+                bucket_notices.add(target_bucket)
+
+            if not is_gcs_uri(source_uri):
+                if local_path is None:  # pragma: no cover
+                    raise TranscriptionError("ローカルファイルのパスが特定できませんでした。")
+                uploaded_uri = upload_to_gcs(local_path, target_bucket, args.upload_prefix, storage_client)
                 uploaded_uris.append(uploaded_uri)
                 source_uri = uploaded_uri
 

@@ -187,9 +187,12 @@ Google Cloud Speech-to-Text v2 の最新モデル **Chirp 3** を利用した日
 
 - `GOOGLE_APPLICATION_CREDENTIALS` でサービスアカウント JSON を指定
 - `GOOGLE_CLOUD_PROJECT` もしくは `--project` でプロジェクト ID を指定
-- Chirp 3 が利用可能なリージョン (例: `us`, `eu`, `asia-northeast1`, `asia-southeast1`) を選択
-- Batch Recognize では Google Cloud Storage の `gs://` URI が必須（ローカル音声は自動アップロードに対応）
+- Chirp 3 が利用可能なリージョン (例: `us`, `eu`, `asia-northeast1`, `asia-southeast1`) を選択（デフォルトは `asia-northeast1`＝東京）citeturn1search2
+- Batch Recognize では Google Cloud Storage の `gs://` URI が必須（ローカル音声は自動アップロードに対応）citeturn1search0
 - `uv sync` を実行して依存関係 (`google-cloud-speech`, `google-cloud-storage`) をインストール
+- サービスアカウントや ADC に `project_id` が含まれていれば `--project` を省略できます（自動検出）
+- `--upload-bucket` を省略すると、プロジェクトとリージョンに基づく専用バケットを自動作成し再利用します（初回は作成ログを表示）
+- サービスアカウント JSON のパスは `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/service-account.json` のように環境変数で指定します（絶対パス推奨）
 
 #### 基本的な使用方法
 
@@ -203,7 +206,12 @@ uv run python transcribe_google_chirp.py meeting.mp3 \
   --mode streaming --interim-results --language-codes ja-JP \
   --project my-project --location us --format json --output transcript.json
 
-# 1時間規模の音声を Batch Recognize で処理（ローカルファイルをGCSへ自動アップロード）
+# 1時間規模の音声を Batch Recognize で処理（バケット未指定なら自動作成）
+uv run python transcribe_google_chirp.py long_form.wav \
+  --mode batch \
+  --project my-project --location us --format json --output long_form.json
+
+# 既存バケットを使い分けたい場合の例
 uv run python transcribe_google_chirp.py long_form.wav \
   --mode batch --upload-bucket my-bucket --upload-prefix transcripts \
   --project my-project --location us --format json --output long_form.json
@@ -216,13 +224,13 @@ uv run python transcribe_google_chirp.py lecture.wav \
 
 #### 主なオプション
 
-- `--mode`: `auto` は10MB以下を同期、それ以上は自動で Batch Recognize に切り替え（1時間までの長尺処理に対応）
+- `--mode`: `auto` は10MB以下を同期、それ以上は自動で Batch Recognize に切り替え（1時間までの長尺処理に対応）citeturn1search1turn1search2
 - `--language-codes`: 言語コードを明示指定。`--auto-language` で自動検出
 - `--enable-word-time-offsets`: 単語レベルのタイムスタンプを取得（同期・ストリーミング・バッチで使用可能）
 - `--denoise-audio` / `--snr-threshold`: 内蔵デノイザーと SNR フィルタを有効化し雑音を抑制
 - `--phrase`: Speech Adaptation で固有名詞などを強調し、認識精度を向上
 
-> **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。
+> **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。citeturn1search1turn1search2
 
 ##### モデル・処理オプション
 
