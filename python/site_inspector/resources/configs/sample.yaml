@@ -1,0 +1,25 @@
+# サンプル設定ファイル
+base_url: "https://example.com"
+user_agent: "SiteInspectorBot/0.1 (+https://example.com/bot)"
+max_depth: 2
+max_pages: 200
+concurrency: 5
+request_timeout: 10
+delay_seconds: 0.5
+respect_robots: true
+follow_sitemap: true
+allowed_domains:
+  - "example.com"
+blacklist_patterns:
+  - "\\.pdf$"
+  - "\\.zip$"
+output:
+  directory: "./reports/example"
+  write_json: true
+  write_csv: true
+  write_markdown: true
+  download_images: false
+  image_directory: "./reports/example/images"
+playwright:
+  enabled: false
+  max_pages: 20
