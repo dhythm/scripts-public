@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, FieldValidationInfo, HttpUrl, field_validator
+from pydantic import BaseModel, Field, FieldValidationInfo, HttpUrl, field_validator, model_validator
 
 
 class OutputConfig(BaseModel):
@@ -47,17 +47,13 @@ class CrawlConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     playwright: PlaywrightConfig = Field(default_factory=PlaywrightConfig)
 
-    @field_validator("allowed_domains")
-    @classmethod
-    def _ensure_allowed_domains(cls, value: List[str], info: FieldValidationInfo) -> List[str]:
-        if value:
-            return value
-        base_url = info.data.get("base_url")
-        if base_url:
-            hostname = urlparse(str(base_url)).hostname
+    @model_validator(mode="after")
+    def _populate_allowed_domains(self) -> "CrawlConfig":
+        if not self.allowed_domains:
+            hostname = urlparse(str(self.base_url)).hostname
             if hostname:
-                return [hostname]
-        return value
+                self.allowed_domains = [hostname]
+        return self
 
     @field_validator("max_depth")
     @classmethod
