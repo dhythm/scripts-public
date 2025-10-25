@@ -17,7 +17,7 @@ from .models import CrawlSummary, PageData
 from .parser import HTMLParser
 from .reporting import build_summary
 from .sitemap import fetch_sitemap_urls
-from .storage import export_csv, export_json, export_markdown
+from .storage import export_csv, export_json, export_markdown, export_structure_json
 
 console = Console()
 
@@ -77,6 +77,7 @@ class Crawler:
         self._client: Optional[httpx.AsyncClient] = None
         self._robots = RobotsHandler(config)
         self._image_downloader: Optional[ImageDownloader] = None
+        self._parent_map: dict[str, Optional[str]] = {}
 
     async def run(self) -> Tuple[List[PageData], dict]:
         self.config.ensure_output_dirs()
@@ -116,6 +117,8 @@ class Crawler:
         queue: asyncio.Queue[Tuple[str, int]] = asyncio.Queue()
         seeds = await self._initial_urls()
         for seed in seeds:
+            normalized = normalize_url(seed)
+            self._parent_map.setdefault(normalized, None)
             await queue.put((seed, 0))
 
         workers = [
@@ -210,6 +213,8 @@ class Crawler:
             self._results.append(page)
             return
 
+        parent_url = self._parent_map.get(normalized)
+
         if text:
             page, links = self._parser.parse(
                 url=normalized,
@@ -223,6 +228,7 @@ class Crawler:
             page = PageData(
                 url=normalized,
                 depth=depth,
+                parent_url=parent_url,
                 status_code=status_code,
                 content_type=content_type,
                 fetched_at=fetched_at,
@@ -231,6 +237,9 @@ class Crawler:
                 links=[],
             )
             links = []
+
+        if text:
+            page.parent_url = parent_url
 
         if self.config.output.download_images and self._image_downloader:
             await self._download_images(page)
@@ -244,6 +253,8 @@ class Crawler:
         if depth < self.config.max_depth and self._pages_crawled < self.config.max_pages:
             for link in links:
                 if self._should_visit(link, depth + 1):
+                    child_normalized = normalize_url(link)
+                    self._parent_map.setdefault(child_normalized, normalized)
                     await queue.put((link, depth + 1))
 
     async def _download_images(self, page: PageData) -> None:
@@ -264,3 +275,4 @@ class Crawler:
             export_csv(pages, output_dir / "pages.csv")
         if self.config.output.write_markdown:
             export_markdown(pages, summary, output_dir / "summary.md")
+        export_structure_json(pages, output_dir / "structure.json")
