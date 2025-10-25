@@ -6,7 +6,7 @@
 
 ```bash
 uv sync
-uv run site-inspector https://example.com --depth 2 --max-pages 50 --output-dir reports/latest
+uv run site-inspector https://example.com --depth 2 --max-pages 50 --download-images --output-dir reports/latest
 ```
 
 ## 主な機能
