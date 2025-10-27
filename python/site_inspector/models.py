@@ -26,6 +26,7 @@ class PageMetadata(BaseModel):
 class PageData(BaseModel):
     url: HttpUrl
     depth: int
+    parent_url: Optional[str] = None
     status_code: Optional[int] = None
     content_type: Optional[str] = None
     fetched_at: datetime

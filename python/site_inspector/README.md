@@ -6,7 +6,7 @@
 
 ```bash
 uv sync
-uv run site-inspector crawl https://example.com --depth 2 --output-dir reports/latest
+uv run site-inspector https://example.com --depth 2 --max-pages 50 --download-images --output-dir reports/latest
 ```
 
 ## 主な機能
@@ -15,6 +15,7 @@ uv run site-inspector crawl https://example.com --depth 2 --output-dir reports/l
 - ページタイトル・見出し・メタ情報・本文サマリの抽出
 - 画像タグ収集および属性情報の記録（画像ダウンロードはオプション）
 - JSON / CSV / Markdown レポートの出力
+- マークダウンと `structure.json` による階層的なサイト構造の可視化
 - レートリミット・クロール上限・除外URLパターンの設定
 
 詳細は `resources/configs/sample.yaml` を参照してください。

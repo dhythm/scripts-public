@@ -28,7 +28,8 @@ class OutputConfig(BaseModel):
 
     @model_validator(mode="after")
     def _ensure_image_directory(self) -> "OutputConfig":
-        if self.download_images and self.image_directory is None and isinstance(self.directory, Path):
+        # download_images が有効な場合は image_directory を必ず設定する
+        if self.download_images and self.image_directory is None:
             self.image_directory = self.directory / "images"
         return self
 
@@ -80,5 +81,7 @@ class CrawlConfig(BaseModel):
 
     def ensure_output_dirs(self) -> None:
         self.output.directory.mkdir(parents=True, exist_ok=True)
-        if self.output.download_images and self.output.image_directory is not None:
+        if self.output.download_images:
+            if self.output.image_directory is None:
+                self.output.image_directory = self.output.directory / "images"
             self.output.image_directory.mkdir(parents=True, exist_ok=True)
