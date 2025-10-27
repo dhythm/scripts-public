@@ -26,6 +26,12 @@ class OutputConfig(BaseModel):
                     return directory / "images"
         return value
 
+    @model_validator(mode="after")
+    def _ensure_image_directory(self) -> "OutputConfig":
+        if self.download_images and self.image_directory is None and isinstance(self.directory, Path):
+            self.image_directory = self.directory / "images"
+        return self
+
 
 class PlaywrightConfig(BaseModel):
     enabled: bool = False
