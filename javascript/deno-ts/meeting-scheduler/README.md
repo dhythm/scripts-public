@@ -142,12 +142,19 @@ deno task meeting \
 | `-s, --start` | 検索開始日時 | 現在時刻 |
 | `-e, --end` | 検索終了日時 | 開始から7日後 |
 | `-d, --duration` | 会議の長さ（分） | 60 |
+| `-m, --min-duration` | 最小会議時間（分）※--raw-slots使用時 | 30 |
 | `-p, --participant` | 参加者情報 (名前:email:source[:sourceId]) | 必須 |
 | `--participants-file` | 参加者CSVファイル | - |
 | `--all-day` | 営業時間外も含める | false |
 | `--timezone` | タイムゾーン | Asia/Tokyo |
 | `-f, --format` | 出力形式 (text/json/markdown) | text |
 | `--openai` | OpenAI APIで最適化 | false |
+| `--raw-slots` | 連続した空き時間ブロックを表示 | false |
+| `--show-all` | すべての空き時間候補を表示 | false |
+| `--limit` | 表示する候補数の上限 | 5 |
+| `--text-no-index` | テキスト出力で先頭の番号を非表示 | true |
+| `--show-index` | テキスト出力で先頭の番号を表示 | false |
+| `--include-holidays` | 日本の祝日を含める | false |
 | `-v, --verbose` | 詳細ログ表示 | false |
 
 ### 環境変数（.envファイル）
