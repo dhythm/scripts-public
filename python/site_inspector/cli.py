@@ -61,32 +61,23 @@ def crawl(
     elif "base_url" not in config_dict:
         raise typer.BadParameter("URL を指定するか、設定ファイルに base_url を記載してください。")
 
+    if depth is not None:
+        config_dict["max_depth"] = depth
+    if max_pages is not None:
+        config_dict["max_pages"] = max_pages
+    if respect_robots is not None:
+        config_dict["respect_robots"] = respect_robots
+
+    output_dict = config_dict.setdefault("output", {})
+    if output_dir is not None:
+        output_dict["directory"] = str(output_dir)
+    if download_images is not None:
+        output_dict["download_images"] = download_images
+
     try:
         config = CrawlConfig(**config_dict)
     except Exception as exc:
         raise typer.BadParameter(f"設定の読み込みに失敗しました: {exc}") from exc
-
-    update_data = {}
-    if depth is not None:
-        update_data["max_depth"] = depth
-    if max_pages is not None:
-        update_data["max_pages"] = max_pages
-    if respect_robots is not None:
-        update_data["respect_robots"] = respect_robots
-
-    if update_data:
-        config = config.model_copy(update=update_data)
-
-    output_update = {}
-    if output_dir is not None:
-        output_update["directory"] = output_dir
-    if download_images is not None:
-        output_update["download_images"] = download_images
-
-    if output_update:
-        config = config.model_copy(
-            update={"output": config.output.model_copy(update=output_update)}
-        )
 
     try:
         pages, summary = asyncio.run(_run_crawler(config))
