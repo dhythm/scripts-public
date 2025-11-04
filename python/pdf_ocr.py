@@ -1,4 +1,5 @@
 import pytesseract
+from pytesseract import TesseractError, TesseractNotFoundError
 from pdf2image import convert_from_path
 from PIL import Image
 import sys
@@ -7,6 +8,72 @@ import warnings
 import logging
 import cv2
 import numpy as np
+
+
+LANG_WARNING_SHOWN = set()
+
+
+def warn_missing_language(lang):
+    """OCR言語データが不足している場合の警告を1度だけ表示"""
+    if lang in LANG_WARNING_SHOWN:
+        return
+    LANG_WARNING_SHOWN.add(lang)
+
+    if lang == 'jpn':
+        print("警告: 日本語OCRデータ (jpn) が見つかりません。英語モードで実行します。")
+        print("日本語OCRをインストールするには:")
+        print("  macOS: brew install tesseract-lang")
+        print("  Ubuntu/Debian: sudo apt-get install tesseract-ocr-jpn")
+    elif lang == 'jpn_vert':
+        print("警告: 縦書き日本語OCRデータ (jpn_vert) が見つかりません。横書きモードで処理を継続します。")
+        print("縦書き対応データをインストールするには:")
+        print("  macOS: brew install tesseract-lang")
+        print("  Ubuntu/Debian: sudo apt-get install tesseract-ocr-jpn")
+
+
+def _is_japanese_character(char):
+    code = ord(char)
+    return (
+        0x3000 <= code <= 0x303F or  # 記号
+        0x3040 <= code <= 0x30FF or  # ひらがな・カタカナ
+        0x3400 <= code <= 0x4DBF or  # CJK拡張A
+        0x4E00 <= code <= 0x9FFF or  # 漢字
+        0xFF01 <= code <= 0xFF60 or  # 全角記号
+        0xFF61 <= code <= 0xFF9F     # 半角カナ
+    )
+
+
+def _score_text(text):
+    if text is None:
+        return (0, 0.0, 0)
+
+    stripped = ''.join(ch for ch in text if not ch.isspace())
+    if not stripped:
+        return (0, 0.0, 0)
+
+    jp_count = sum(1 for ch in stripped if _is_japanese_character(ch))
+    ratio = jp_count / len(stripped)
+    return (jp_count, ratio, len(stripped))
+
+
+def _try_ocr_variant(image, lang, config, warn_missing=True):
+    try:
+        return pytesseract.image_to_string(image, lang=lang, config=config)
+    except TesseractNotFoundError:
+        raise
+    except (TesseractError, RuntimeError, OSError) as e:
+        message = str(e)
+        missing_keywords = (
+            "Error opening data file",
+            "Failed loading language",
+            "Missing Tesseract OCR language",
+            "training data for language"
+        )
+        if any(keyword in message for keyword in missing_keywords):
+            if warn_missing:
+                warn_missing_language(lang)
+            return None
+        raise Exception(str(e))
 
 def pdf_to_images(pdf_path):
     """PDFファイルを画像のリストに変換する"""
@@ -43,26 +110,44 @@ def preprocess_image(image):
 def perform_ocr(image, lang='jpn'):
     """画像に対してOCRを実行する"""
     try:
-        # 前処理を適用
         processed_image = preprocess_image(image)
-        
-        # OCR設定
-        custom_config = r'--psm 6 -c preserve_interword_spaces=1'
-        
-        # 日本語OCRを実行（日本語データがない場合は英語で実行）
-        try:
-            text = pytesseract.image_to_string(processed_image, lang='jpn', config=custom_config)
-        except Exception:
-            # 日本語データがない場合は英語で実行し、警告を表示
-            print("警告: 日本語OCRデータが見つかりません。英語モードで実行します。")
-            print("日本語OCRをインストールするには:")
-            print("  macOS: brew install tesseract-lang")
-            print("  Ubuntu/Debian: sudo apt-get install tesseract-ocr-jpn")
-            text = pytesseract.image_to_string(processed_image, lang='eng', config=custom_config)
-        
-        return text
+
+        base_config = r'--psm 6 -c preserve_interword_spaces=1'
+        vertical_config = r'--psm 5 -c preserve_interword_spaces=1 -c textord_vertical_text=1'
+
+        results = []
+
+        # 横書き（標準）の日本語OCR
+        horizontal_text = _try_ocr_variant(processed_image, 'jpn', base_config)
+        horizontal_lang = 'jpn'
+        if horizontal_text is None:
+            horizontal_lang = 'eng'
+            horizontal_text = _try_ocr_variant(processed_image, 'eng', base_config, warn_missing=False)
+        if horizontal_text is not None:
+            results.append({'label': f'{horizontal_lang}_horizontal', 'text': horizontal_text})
+
+        # 縦書き用の日本語OCR（jpn_vert）
+        vertical_text = _try_ocr_variant(processed_image, 'jpn_vert', vertical_config)
+        if vertical_text is not None:
+            results.append({'label': 'jpn_vert_vertical', 'text': vertical_text})
+
+        # ページが回転しているケースにも対応
+        for angle in (90, 270):
+            rotated_image = processed_image.rotate(angle, expand=True)
+            rotated_horizontal = _try_ocr_variant(rotated_image, 'jpn', base_config, warn_missing=False)
+            if rotated_horizontal is not None:
+                results.append({'label': f'jpn_rot{angle}', 'text': rotated_horizontal})
+
+            rotated_vertical = _try_ocr_variant(rotated_image, 'jpn_vert', vertical_config, warn_missing=False)
+            if rotated_vertical is not None:
+                results.append({'label': f'jpn_vert_rot{angle}', 'text': rotated_vertical})
+
+        if not results:
+            return ""
+
+        best_result = max(results, key=lambda item: _score_text(item['text']))
+        return best_result['text']
     except Exception as e:
-        # Tesseractがインストールされていない場合のエラーメッセージ
         if "tesseract is not installed" in str(e).lower():
             raise Exception(
                 "Tesseractがインストールされていません。\n"
