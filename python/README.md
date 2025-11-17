@@ -517,3 +517,40 @@ uv run python pdf_ocr.py 000928313.pdf
 - 画像ベースのPDF（スキャンされたPDF）からもテキスト抽出可能
 - 画像前処理により、OCRの精度を向上
 - 各ページごとにテキストを抽出し、`.ocr.txt`ファイルとして保存
+
+## Google Text-to-Speech 変換 (google_tts.py)
+
+Google Cloud Text-to-Speech APIで日本語テキストを音声ファイルに変換するスクリプトです。
+
+### 事前準備
+
+1. Google CloudプロジェクトでText-to-Speech APIを有効化
+2. サービスアカウント鍵(JSON)を取得し、`GOOGLE_APPLICATION_CREDENTIALS` 環境変数に設定するか、実行時に `--credentials` で指定
+3. 依存関係を同期
+
+```sh
+uv sync
+```
+
+### 実行例
+
+```sh
+# 直接文字列を読み上げてMP3を生成
+uv run python google_tts.py --text "本日は晴天なり。" --output demo.mp3
+
+# テキストファイルを読み上げ、話速とピッチを調整
+uv run python google_tts.py --text-file scripts/sample.txt --rate 1.2 --pitch 2.0 --format wav
+
+# サービスアカウント鍵を指定して実行
+uv run python google_tts.py --text "こんにちは" --credentials ~/.config/gcloud/tts-key.json
+```
+
+### 主なオプション
+
+| オプション | 説明 | 既定値 |
+|-------------|------|--------|
+| `--voice` | 使用するボイス名 (例: `ja-JP-Neural2-C`) | `ja-JP-Neural2-C` |
+| `--format` | 出力形式 (`mp3`, `wav`, `ogg`) | `mp3` |
+| `--rate` | 話速 (0.25〜4.0) | `1.0` |
+| `--pitch` | ピッチ調整 (-20〜20推奨) | `0.0` |
+| `--sample-rate` | サンプルレートをHzで指定 | なし |
