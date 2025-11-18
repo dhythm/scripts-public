@@ -792,7 +792,7 @@ async function pdfSearch(
   }
 
   if (!hits.length) {
-    throw new Error("PDFの検索結果が得られませんでした");
+    return [];
   }
 
   return hits.slice(0, limit);
