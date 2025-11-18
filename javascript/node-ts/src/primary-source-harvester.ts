@@ -333,7 +333,11 @@ function parseStructuredPayload(
   context: { keyword: string; debug: boolean }
 ): StructuredPayload {
   try {
-    return JSON.parse(rawText) as StructuredPayload;
+    const parsed = JSON.parse(rawText) as StructuredPayload;
+    if (!isStructuredPayloadCandidate(parsed)) {
+      throw new Error("期待する構造化スキーマと一致しません");
+    }
+    return parsed;
   } catch (error) {
     const dumpPath = dumpRawResponse(context.keyword, "parse-error", rawText, {
       always: true,
@@ -367,7 +371,9 @@ function extractStructuredOutputText(response: Response): string {
     return fallbackString;
   }
 
-  return "";
+  throw new Error(
+    `構造化出力が見つかりませんでした (response_id=${response.id})`
+  );
 }
 
 function findStructuredPayload(
@@ -442,8 +448,16 @@ function findJsonLikeString(
 ): string | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (looksLikeJson(trimmed)) {
-      return trimmed;
+    if (!looksLikeJson(trimmed)) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (isStructuredPayloadCandidate(parsed)) {
+        return trimmed;
+      }
+    } catch {
+      return null;
     }
     return null;
   }
@@ -510,6 +524,7 @@ async function executeResponseWorkflow(
 ): Promise<Response> {
   let passCount = 0;
   let previousResponseId: string | undefined;
+  const handledFunctionCallIds = new Set<string>();
 
   let response = await submitAndPollResponse(client, {
     baseParams: params.baseParams,
@@ -521,7 +536,7 @@ async function executeResponseWorkflow(
   while (true) {
     logToolActivities(response, params.keyword);
 
-    const pendingCalls = extractFunctionCalls(response);
+    const pendingCalls = extractFunctionCalls(response, handledFunctionCallIds);
     if (pendingCalls.length === 0) {
       if (response.status === "completed") {
         return response;
@@ -553,9 +568,10 @@ async function executeResponseWorkflow(
             debug: params.debug,
             keyword: params.keyword,
           });
+          handledFunctionCallIds.add(call.id);
           return {
             type: "function_call_output",
-            call_id: call.id,
+            call_id: call.call_id ?? call.id,
             output: JSON.stringify(payload),
           };
         }
@@ -637,12 +653,13 @@ async function pollResponseUntilTerminal(
 }
 
 function extractFunctionCalls(
-  response: Response
+  response: Response,
+  handledIds: Set<string>
 ): ResponseFunctionToolCallItem[] {
   const calls: ResponseFunctionToolCallItem[] = [];
   for (const item of response.output ?? []) {
     if (item.type === "function_call" && typeof item.id === "string") {
-      if (item.status && item.status !== "in_progress") {
+      if (handledIds.has(item.id)) {
         continue;
       }
       calls.push(item as ResponseFunctionToolCallItem);
