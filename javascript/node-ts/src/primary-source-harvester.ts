@@ -331,14 +331,25 @@ async function harvestKeyword(
     keyword,
     debug: options.debug,
   });
-
-  ensureQuotableSources(keyword, parsed.sources);
+  const {
+    validSources,
+    warnings,
+    primaryCount,
+    secondaryCount,
+  } = sanitizeSourcesForQuotes(keyword, parsed.sources);
+  const pendingGaps = [parsed.pendingGaps, ...warnings]
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .join(" / ") || "なし";
   return {
     keyword: parsed.keyword,
     summary: parsed.summary,
-    stats: parsed.stats,
-    sources: parsed.sources,
-    pendingGaps: parsed.pendingGaps,
+    stats: {
+      primaryCount,
+      secondaryCount,
+    },
+    sources: validSources,
+    pendingGaps,
   };
 }
 
@@ -580,17 +591,36 @@ function formatUsage(usage?: Response["usage"] | null): string {
   return parts.length ? `tokens(${parts.join("/")})` : "";
 }
 
-function ensureQuotableSources(keyword: string, sources: SourceEntry[]) {
+function sanitizeSourcesForQuotes(keyword: string, sources: SourceEntry[]) {
   const MIN_EXCERPT_CHARS = 100;
-  sources.forEach((source) => {
+  const warnings: string[] = [];
+  const validSources: SourceEntry[] = [];
+  let primaryCount = 0;
+  let secondaryCount = 0;
+
+  for (const source of sources) {
     const excerpt = source.excerpt?.trim() ?? "";
     if (excerpt.length < MIN_EXCERPT_CHARS) {
-      throw new Error(
-        `[${keyword}] ソース "${source.title}" の引用文が短すぎます (${excerpt.length}文字)。` +
-          " ページ本文から引用できる記述を excerpt に含めてください。"
+      warnings.push(
+        `"${source.title}" は引用できる本文が不足 (${excerpt.length}文字) のため除外`
       );
+      continue;
     }
-  });
+    validSources.push(source);
+    if (source.classification === "primary") {
+      primaryCount += 1;
+    } else if (source.classification === "secondary") {
+      secondaryCount += 1;
+    }
+  }
+
+  if (!validSources.length) {
+    warnings.push(
+      `[${keyword}] 引用要件を満たすソースが無かったため追加調査が必要です`
+    );
+  }
+
+  return { validSources, warnings, primaryCount, secondaryCount };
 }
 
 async function executeResponseWorkflow(
