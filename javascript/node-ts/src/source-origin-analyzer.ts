@@ -132,36 +132,61 @@ const systemPrompt = `あなたは調査編集者です。渡されたURLの本�
 3. 一次・二次・その他と判定した場合は followUpSources を空配列[]のままにする。
 4. 回答は必ずJSONスキーマに一致させ、日本語で簡潔に記述する。`;
 
+type LogLevel = "INFO" | "DEBUG" | "ERROR";
+
+function logWithTimestamp(level: LogLevel, message: string | string[]): void {
+  const lines = Array.isArray(message)
+    ? message.flatMap((entry) => entry.split(/\r?\n/))
+    : message.split(/\r?\n/);
+  const timestamp = new Date().toISOString();
+  for (const line of lines) {
+    const formatted = `[${timestamp}] [${level}] ${line}`;
+    if (level === "ERROR") {
+      console.error(formatted);
+    } else {
+      console.log(formatted);
+    }
+  }
+}
+
+const logInfo = (message: string | string[]) => logWithTimestamp("INFO", message);
+const logDebug = (message: string | string[]) => logWithTimestamp("DEBUG", message);
+const logError = (message: string | string[]) => logWithTimestamp("ERROR", message);
+
 async function main() {
   try {
     const options = parseCliOptions();
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      console.error("エラー: OPENAI_API_KEY が設定されていません");
+      logError("エラー: OPENAI_API_KEY が設定されていません");
       process.exit(1);
     }
 
+    logInfo(`URL解析を開始: ${options.url}`);
     const client = new OpenAI({ apiKey });
     const fetchResult = await fetchPage(options.url);
     const extracted = extractReadableText(fetchResult.body, options.maxChars);
 
     if (!extracted.text) {
-      console.error("取得テキストが空のため、解析できませんでした。");
+      logError("取得テキストが空のため、解析できませんでした。");
       process.exit(1);
     }
 
     if (options.debug) {
-      console.log("--- 取得メタデータ ---");
-      console.log(`最終URL: ${fetchResult.finalUrl}`);
-      console.log(`HTTPステータス: ${fetchResult.status}`);
-      console.log(`Content-Type: ${fetchResult.contentType ?? "不明"}`);
-      console.log(
-        `抽出長: ${extracted.text.length} chars (元:${extracted.originalLength}, trunc:${extracted.truncated})`
-      );
+      logDebug([
+        "--- 取得メタデータ ---",
+        `最終URL: ${fetchResult.finalUrl}`,
+        `HTTPステータス: ${fetchResult.status}`,
+        `Content-Type: ${fetchResult.contentType ?? "不明"}`,
+        `抽出長: ${extracted.text.length} chars (元:${extracted.originalLength}, trunc:${extracted.truncated})`,
+      ]);
     }
 
     const userPrompt = buildUserPrompt(fetchResult, extracted, options.maxChars);
     const modelResult = await runModel(client, userPrompt, options.userLocation);
+    logInfo(
+      `LLM解析完了: classification=${modelResult.classification}, followUpSources=${modelResult.followUpSources.length}`
+    );
     const finalResult: FinalResult = {
       ...modelResult,
       url: fetchResult.requestedUrl,
@@ -176,16 +201,18 @@ async function main() {
 
     if (options.outputPath) {
       writeFileSync(options.outputPath, JSON.stringify(finalResult, null, 2), "utf-8");
-      console.log(`📁 結果を ${options.outputPath} に保存しました`);
+      logInfo(`📁 結果を ${options.outputPath} に保存しました`);
     }
 
     if (options.asJson) {
+      logInfo("結果をJSON形式で標準出力へ書き出します");
       console.log(JSON.stringify(finalResult, null, 2));
     } else {
+      logInfo("結果を整形テキストとして表示します");
       printHumanReadable(finalResult);
     }
   } catch (error) {
-    console.error(
+    logError(
       `解析に失敗しました: ${error instanceof Error ? error.message : String(error)}`
     );
     process.exit(1);
@@ -214,7 +241,7 @@ function parseCliOptions(): CliOptions {
   }
 
   if (!values.url) {
-    console.error("エラー: --url を指定してください");
+    logError("エラー: --url を指定してください");
     printHelp();
     process.exit(1);
   }
@@ -538,18 +565,18 @@ function ensureString(value: unknown, label: string): string {
 }
 
 function printHumanReadable(result: FinalResult): void {
-  console.log("=== 判定結果 ===");
-  console.log(`分類: ${result.classification}`);
-  console.log(`理由: ${result.reasoning}`);
-  console.log(`要約: ${result.summary}`);
-  console.log(
-    `主要な主体: ${result.keyEntities.length ? result.keyEntities.join(", ") : "該当なし"}`
-  );
-  console.log(`未解決事項: ${result.pendingNeeds || "なし"}`);
+  logInfo([
+    "=== 判定結果 ===",
+    `分類: ${result.classification}`,
+    `理由: ${result.reasoning}`,
+    `要約: ${result.summary}`,
+    `主要な主体: ${result.keyEntities.length ? result.keyEntities.join(", ") : "該当なし"}`,
+    `未解決事項: ${result.pendingNeeds || "なし"}`,
+  ]);
   if (result.followUpSources.length) {
-    console.log("--- 三次情報を補完する一次/二次情報 ---");
+    logInfo("--- 三次情報を補完する一次/二次情報 ---");
     result.followUpSources.forEach((source, index) => {
-      console.log(
+      logInfo(
         `[${index + 1}] (${source.classification}) ${source.title}\n    URL: ${source.url}\n    関係: ${source.relationToOriginal}\n    信頼理由: ${source.whyTrusted}\n    サマリー: ${source.summary}`
       );
     });
