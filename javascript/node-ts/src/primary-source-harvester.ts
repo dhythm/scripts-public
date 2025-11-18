@@ -1,3 +1,7 @@
+import { parse as parseHtml } from "node-html-parser";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { parseArgs } from "node:util";
 import OpenAI from "openai";
 import type {
   FunctionTool,
@@ -6,9 +10,6 @@ import type {
   ResponseInputItem,
   WebSearchTool,
 } from "openai/resources/responses/responses";
-import { parseArgs } from "node:util";
-import { writeFileSync } from "node:fs";
-import { parse as parseHtml } from "node-html-parser";
 
 interface CliOptions {
   keywords: string[];
@@ -48,7 +49,7 @@ interface StructuredPayload {
   summary: string;
   stats: { primaryCount: number; secondaryCount: number };
   sources: SourceEntry[];
-  pendingGaps?: string;
+  pendingGaps: string;
 }
 
 interface PdfSearchArgs {
@@ -97,18 +98,30 @@ const structuredOutputSchema = {
           properties: {
             classification: { type: "string", enum: ["primary", "secondary"] },
             title: { type: "string" },
-            url: { type: "string", format: "uri" },
+            url: { type: "string" },
             publisher: { type: "string" },
             publishedDate: { type: "string" },
             summary: { type: "string" },
             whyTrusted: { type: "string" },
-            retrievalMethod: { type: "string", enum: ["web_search", "pdf_search"] },
+            retrievalMethod: {
+              type: "string",
+              enum: ["web_search", "pdf_search"],
+            },
           },
-          required: ["classification", "title", "url", "summary", "whyTrusted", "retrievalMethod"],
+          required: [
+            "classification",
+            "title",
+            "url",
+            "publisher",
+            "publishedDate",
+            "summary",
+            "whyTrusted",
+            "retrievalMethod",
+          ],
         },
       },
     },
-    required: ["keyword", "summary", "stats", "sources"],
+    required: ["keyword", "summary", "stats", "pendingGaps", "sources"],
   },
 };
 
@@ -117,7 +130,7 @@ const pdfSearchTool: FunctionTool = {
   name: PDF_SEARCH_TOOL_NAME,
   description:
     "Bing検索(filetype:pdf)を用いて公式ドキュメントなどのPDFを探します。行政・企業・研究機関などのサイトを優先してください。",
-  strict: true,
+  strict: false,
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -147,6 +160,8 @@ const systemPrompt = `\
 - 指定件数を満たすまで必要なだけ検索⇄検証ループを繰り返す。
 - 出力は指定の JSON スキーマに従い、各ソースが一次/二次のどちらかを明示する。
 - 信頼根拠(公式発表/オリジナル資料/著名報道など)を whyTrusted に書く。
+- publisher や publishedDate が不明な場合は "不明" 等のテキストを入れて必ず埋める。
+- pendingGaps には残課題/取得できなかった情報を必ず文章で記す。ギャップが無ければ "なし" と記載する。
 `;
 
 async function main() {
@@ -184,14 +199,23 @@ async function main() {
   const payload = { generatedAt: new Date().toISOString(), reports };
 
   if (options.outputPath) {
-    writeFileSync(options.outputPath, JSON.stringify(payload, null, 2), "utf-8");
+    ensureParentDir(options.outputPath);
+    writeFileSync(
+      options.outputPath,
+      JSON.stringify(payload, null, 2),
+      "utf-8"
+    );
     console.log(`📁 結果を ${options.outputPath} に保存しました`);
   } else {
     console.log(JSON.stringify(payload, null, 2));
   }
 }
 
-async function harvestKeyword(client: OpenAI, keyword: string, options: CliOptions): Promise<KeywordReport> {
+async function harvestKeyword(
+  client: OpenAI,
+  keyword: string,
+  options: CliOptions
+): Promise<KeywordReport> {
   const userPrompt = buildUserPrompt(keyword, options);
   const initialInput: ResponseInputItem[] = [
     {
@@ -216,7 +240,7 @@ async function harvestKeyword(client: OpenAI, keyword: string, options: CliOptio
   ];
 
   const baseParams = {
-    model: "gpt-5-min",
+    model: "gpt-5-mini",
     instructions: systemPrompt,
     tools,
     parallel_tool_calls: true,
@@ -248,17 +272,21 @@ async function harvestKeyword(client: OpenAI, keyword: string, options: CliOptio
 }
 
 function buildUserPrompt(keyword: string, options: CliOptions): string {
-  return `対象キーワード: ${keyword}\n` +
+  return (
+    `対象キーワード: ${keyword}\n` +
     `一次情報目標: ${options.minPrimary}件以上\n` +
     `二次情報目標: ${options.minSecondary}件以上\n` +
-    `PDFが有用な場合は pdf_search を必ず呼び出すこと。`;
+    `PDFが有用な場合は pdf_search を必ず呼び出すこと。`
+  );
 }
 
 function parseStructuredPayload(rawText: string): StructuredPayload {
   try {
     return JSON.parse(rawText) as StructuredPayload;
   } catch (error) {
-    throw new Error(`JSON出力の解析に失敗しました: ${(error as Error).message}`);
+    throw new Error(
+      `JSON出力の解析に失敗しました: ${(error as Error).message}`
+    );
   }
 }
 
@@ -299,14 +327,16 @@ async function runResponseLoop(
 
     passCount += 1;
     const toolOutputs = await Promise.all(
-      pendingCalls.map(async (call): Promise<ResponseInputItem.FunctionCallOutput> => {
-        const payload = await handleFunctionCall(call);
-        return {
-          type: "function_call_output",
-          call_id: call.id,
-          output: JSON.stringify(payload),
-        };
-      })
+      pendingCalls.map(
+        async (call): Promise<ResponseInputItem.FunctionCallOutput> => {
+          const payload = await handleFunctionCall(call);
+          return {
+            type: "function_call_output",
+            call_id: call.id,
+            output: JSON.stringify(payload),
+          };
+        }
+      )
     );
 
     response = await client.responses.create({
@@ -317,7 +347,9 @@ async function runResponseLoop(
   }
 }
 
-function extractFunctionCalls(response: Response): ResponseFunctionToolCallItem[] {
+function extractFunctionCalls(
+  response: Response
+): ResponseFunctionToolCallItem[] {
   const calls: ResponseFunctionToolCallItem[] = [];
   for (const item of response.output ?? []) {
     if (item.type === "function_call" && typeof item.id === "string") {
@@ -355,15 +387,25 @@ async function handleFunctionCall(call: ResponseFunctionToolCallItem) {
   }
 }
 
-async function pdfSearch(query: string, limit: number, siteFilters: string[]): Promise<PdfSearchHit[]> {
-  const filterSuffix = siteFilters.filter(Boolean).map((domain) => `site:${domain}`).join(" ");
-  const q = ["filetype:pdf", query.trim(), filterSuffix].filter(Boolean).join(" ");
+async function pdfSearch(
+  query: string,
+  limit: number,
+  siteFilters: string[]
+): Promise<PdfSearchHit[]> {
+  const filterSuffix = siteFilters
+    .filter(Boolean)
+    .map((domain) => `site:${domain}`)
+    .join(" ");
+  const q = ["filetype:pdf", query.trim(), filterSuffix]
+    .filter(Boolean)
+    .join(" ");
   const searchParams = new URLSearchParams({ q, setlang: "ja" });
   const url = `https://www.bing.com/search?${searchParams.toString()}`;
 
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
       "Accept-Language": "ja,en-US;q=0.8",
     },
     redirect: "follow",
@@ -396,7 +438,13 @@ async function pdfSearch(query: string, limit: number, siteFilters: string[]): P
     const date = sanitizeText(item.querySelector(".news_dt")?.text ?? "");
     const domain = safeHostname(resolved);
 
-    hits.push({ title, url: resolved, snippet, domain, publishedDate: date || undefined });
+    hits.push({
+      title,
+      url: resolved,
+      snippet,
+      domain,
+      publishedDate: date || undefined,
+    });
   }
 
   if (!hits.length) {
@@ -462,22 +510,36 @@ function parseCliOptions(): CliOptions {
     allowPositionals: true,
   });
 
-  const keywords = [
-    ...(values.keyword ?? []),
-    ...positionals,
-  ].map((text) => text.trim()).filter(Boolean);
+  const keywords = [...(values.keyword ?? []), ...positionals]
+    .map((text) => text.trim())
+    .filter(Boolean);
 
   if (!keywords.length) {
     console.error("キーワードを --keyword または位置引数で指定してください。");
     process.exit(1);
   }
 
-  const minPrimary = parsePositiveInt(values["primary-min"], DEFAULT_PRIMARY_MIN);
-  const minSecondary = parsePositiveInt(values["secondary-min"], DEFAULT_SECONDARY_MIN);
-  const pdfLimit = clampNumber(parsePositiveInt(values["pdf-limit"], DEFAULT_PDF_LIMIT), 1, 10);
-  const maxToolPasses = clampNumber(parsePositiveInt(values["max-passes"], DEFAULT_TOOL_PASSES), 1, 12);
+  const minPrimary = parsePositiveInt(
+    values["primary-min"],
+    DEFAULT_PRIMARY_MIN
+  );
+  const minSecondary = parsePositiveInt(
+    values["secondary-min"],
+    DEFAULT_SECONDARY_MIN
+  );
+  const pdfLimit = clampNumber(
+    parsePositiveInt(values["pdf-limit"], DEFAULT_PDF_LIMIT),
+    1,
+    10
+  );
+  const maxToolPasses = clampNumber(
+    parsePositiveInt(values["max-passes"], DEFAULT_TOOL_PASSES),
+    1,
+    12
+  );
 
-  const hasLocation = values.country || values.region || values.city || values.timezone;
+  const hasLocation =
+    values.country || values.region || values.city || values.timezone;
   const userLocation = hasLocation
     ? {
         type: "approximate" as const,
@@ -509,7 +571,23 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function ensureParentDir(pathStr: string) {
+  try {
+    const dir = dirname(pathStr);
+    if (dir && dir !== ".") {
+      mkdirSync(dir, { recursive: true });
+    }
+  } catch (error) {
+    console.warn(
+      `出力ディレクトリ作成に失敗しました: ${(error as Error).message}`
+    );
+  }
+}
+
 main().catch((error) => {
-  console.error("致命的なエラーが発生しました:", error instanceof Error ? error.message : error);
+  console.error(
+    "致命的なエラーが発生しました:",
+    error instanceof Error ? error.message : error
+  );
   process.exit(1);
 });
