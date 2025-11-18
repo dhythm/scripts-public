@@ -184,7 +184,7 @@ const systemPrompt = `\
 - 信頼根拠(公式発表/オリジナル資料/著名報道など)を whyTrusted に書く。
 - publisher や publishedDate が不明な場合は "不明" 等のテキストを入れて必ず埋める。
 - pendingGaps には残課題/取得できなかった情報を必ず文章で記す。ギャップが無ければ "なし" と記載する。
-- source.excerpt には必ずページ本体から引用可能な本文(3〜4文、最大200語程度)を記載し、単なるリンク集やランディングページのみの記述は採用しない。
+- source.excerpt には必ずページ本体から引用可能な本文(4〜8文、最大400語程度)を記載し、単なるリンク集やランディングページのみの記述は採用しない。
 - ページ本文に具体的なデータ・記述が無い場合、そのソースは採用せず別のソースを探す。
 `;
 
@@ -581,7 +581,7 @@ function formatUsage(usage?: Response["usage"] | null): string {
 }
 
 function ensureQuotableSources(keyword: string, sources: SourceEntry[]) {
-  const MIN_EXCERPT_CHARS = 50;
+  const MIN_EXCERPT_CHARS = 100;
   sources.forEach((source) => {
     const excerpt = source.excerpt?.trim() ?? "";
     if (excerpt.length < MIN_EXCERPT_CHARS) {
@@ -1048,7 +1048,11 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function parsePdfStrategy(value: string | undefined): PdfStrategy {
   if (!value) return DEFAULT_PDF_STRATEGY;
   const normalized = value.toLowerCase();
-  if (normalized === "auto" || normalized === "always" || normalized === "never") {
+  if (
+    normalized === "auto" ||
+    normalized === "always" ||
+    normalized === "never"
+  ) {
     return normalized as PdfStrategy;
   }
   console.warn(
