@@ -21,6 +21,7 @@ interface CliOptions {
   outputPath?: string;
   userLocation?: WebSearchTool["user_location"];
   debug: boolean;
+  responseTimeoutMs: number;
 }
 
 interface SourceEntry {
@@ -72,6 +73,7 @@ const DEFAULT_PRIMARY_MIN = 2;
 const DEFAULT_SECONDARY_MIN = 2;
 const DEFAULT_PDF_LIMIT = 5;
 const DEFAULT_TOOL_PASSES = 6;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 120_000;
 const PDF_SEARCH_TOOL_NAME = "pdf_search";
 const DEBUG_DIR = "reports/debug";
 const POLL_INTERVAL_MS = 1500;
@@ -269,6 +271,7 @@ async function harvestKeyword(
     maxPasses: options.maxToolPasses,
     debug: options.debug,
     keyword,
+    responseTimeoutMs: options.responseTimeoutMs,
   });
 
   if (options.debug) {
@@ -534,6 +537,7 @@ async function executeResponseWorkflow(
     maxPasses: number;
     debug: boolean;
     keyword: string;
+    responseTimeoutMs: number;
   }
 ): Promise<Response> {
   let passCount = 0;
@@ -545,6 +549,7 @@ async function executeResponseWorkflow(
     input: params.initialInput,
     keyword: params.keyword,
     debug: params.debug,
+    timeoutMs: params.responseTimeoutMs,
   });
 
   while (true) {
@@ -599,6 +604,7 @@ async function executeResponseWorkflow(
       previousResponseId,
       keyword: params.keyword,
       debug: params.debug,
+      timeoutMs: params.responseTimeoutMs,
     });
   }
 }
@@ -617,6 +623,7 @@ async function submitAndPollResponse(
     previousResponseId?: string;
     keyword: string;
     debug: boolean;
+    timeoutMs: number;
   }
 ): Promise<Response> {
   const requestPayload = {
@@ -629,17 +636,24 @@ async function submitAndPollResponse(
   };
   const initialResponse = await client.responses.create(requestPayload);
   console.log(`🚀 [${args.keyword}] リクエスト送信: id=${initialResponse.id}`);
-  return pollResponseUntilTerminal(client, initialResponse.id, {
-    keyword: args.keyword,
-  });
+  return pollResponseUntilTerminal(
+    client,
+    initialResponse.id,
+    {
+      keyword: args.keyword,
+    },
+    args.timeoutMs
+  );
 }
 
 async function pollResponseUntilTerminal(
   client: OpenAI,
   responseId: string,
-  context: { keyword: string }
+  context: { keyword: string },
+  timeoutMs: number
 ): Promise<Response> {
   let lastStatus: Response["status"] | undefined;
+  const startedAt = Date.now();
   while (true) {
     const response = await client.responses.retrieve(responseId);
     if (response.status !== lastStatus) {
@@ -648,6 +662,21 @@ async function pollResponseUntilTerminal(
     }
 
     if (response.status === "in_progress" || response.status === "queued") {
+      if (Date.now() - startedAt >= timeoutMs) {
+        console.warn(
+          `[${context.keyword}] レスポンス待機が ${timeoutMs}ms を超過しました。キャンセルを試みます`
+        );
+        try {
+          await client.responses.cancel(responseId);
+        } catch (error) {
+          console.warn(
+            `[${context.keyword}] キャンセルに失敗: ${(error as Error).message}`
+          );
+        }
+        throw new Error(
+          `[${context.keyword}] モデル応答がタイムアウトしました (${timeoutMs}ms)`
+        );
+      }
       await delay(POLL_INTERVAL_MS);
       continue;
     }
@@ -859,6 +888,7 @@ function parseCliOptions(): CliOptions {
       "secondary-min": { type: "string" },
       "pdf-limit": { type: "string" },
       "max-passes": { type: "string" },
+      "response-timeout": { type: "string" },
       output: { type: "string", short: "o" },
       country: { type: "string" },
       region: { type: "string" },
@@ -896,6 +926,11 @@ function parseCliOptions(): CliOptions {
     1,
     12
   );
+  const responseTimeoutMs = clampNumber(
+    parsePositiveInt(values["response-timeout"], DEFAULT_RESPONSE_TIMEOUT_MS),
+    10_000,
+    600_000
+  );
 
   const hasLocation =
     values.country || values.region || values.city || values.timezone;
@@ -918,6 +953,7 @@ function parseCliOptions(): CliOptions {
     outputPath: values.output,
     userLocation,
     debug: Boolean(values.debug),
+    responseTimeoutMs,
   };
 }
 
