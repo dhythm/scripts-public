@@ -29,6 +29,7 @@ interface SourceEntry {
   title: string;
   url: string;
   summary: string;
+  excerpt: string;
   publisher?: string;
   publishedDate?: string;
   whyTrusted: string;
@@ -119,6 +120,7 @@ const structuredOutputSchema = {
             publisher: { type: "string" },
             publishedDate: { type: "string" },
             summary: { type: "string" },
+            excerpt: { type: "string" },
             whyTrusted: { type: "string" },
             retrievalMethod: {
               type: "string",
@@ -132,6 +134,7 @@ const structuredOutputSchema = {
             "publisher",
             "publishedDate",
             "summary",
+            "excerpt",
             "whyTrusted",
             "retrievalMethod",
           ],
@@ -179,6 +182,8 @@ const systemPrompt = `\
 - 信頼根拠(公式発表/オリジナル資料/著名報道など)を whyTrusted に書く。
 - publisher や publishedDate が不明な場合は "不明" 等のテキストを入れて必ず埋める。
 - pendingGaps には残課題/取得できなかった情報を必ず文章で記す。ギャップが無ければ "なし" と記載する。
+- source.excerpt には必ずページ本体から引用可能な本文(1〜2文、最大80語程度)を記載し、単なるリンク集やランディングページのみの記述は採用しない。
+- ページ本文に具体的なデータ・記述が無い場合、そのソースは採用せず別のソースを探す。
 `;
 
 async function main() {
@@ -324,6 +329,8 @@ async function harvestKeyword(
     keyword,
     debug: options.debug,
   });
+
+  ensureQuotableSources(keyword, parsed.sources);
   return {
     keyword: parsed.keyword,
     summary: parsed.summary,
@@ -453,6 +460,20 @@ function isStructuredPayloadCandidate(value: unknown): value is StructuredPayloa
     return false;
   }
 
+  const sources = record.sources as SourceEntry[];
+  if (
+    !Array.isArray(sources) ||
+    sources.some(
+      (source) =>
+        !source ||
+        typeof source !== "object" ||
+        typeof source.excerpt !== "string" ||
+        source.excerpt.trim().length === 0
+    )
+  ) {
+    return false;
+  }
+
   return true;
 }
 
@@ -528,6 +549,19 @@ function patchConsoleWithTimestamps() {
       original(`[${new Date().toISOString()}]`, ...args);
     }) as typeof console[typeof method];
   }
+}
+
+function ensureQuotableSources(keyword: string, sources: SourceEntry[]) {
+  const MIN_EXCERPT_CHARS = 30;
+  sources.forEach((source) => {
+    const excerpt = source.excerpt?.trim() ?? "";
+    if (excerpt.length < MIN_EXCERPT_CHARS) {
+      throw new Error(
+        `[${keyword}] ソース "${source.title}" の引用文が短すぎます (${excerpt.length}文字)。` +
+          " ページ本文から引用できる記述を excerpt に含めてください。"
+      );
+    }
+  });
 }
 
 async function executeResponseWorkflow(
