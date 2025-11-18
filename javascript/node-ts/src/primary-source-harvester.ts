@@ -267,7 +267,29 @@ async function harvestKeyword(
     keyword,
   });
 
-  const rawOutput = response.output_text ?? "";
+  if (options.debug) {
+    try {
+      const responseDumpPath = dumpRawResponse(
+        keyword,
+        "response-object",
+        JSON.stringify(response, null, 2),
+        { enabled: true }
+      );
+      if (responseDumpPath) {
+        debugLog(
+          options.debug,
+          `[${keyword}] APIレスポンス全体を ${responseDumpPath} に保存しました`
+        );
+      }
+    } catch (error) {
+      debugLog(
+        options.debug,
+        `[${keyword}] レスポンス保存失敗: ${(error as Error).message}`
+      );
+    }
+  }
+
+  const rawOutput = extractStructuredOutputText(response);
   const dumpPath = dumpRawResponse(keyword, "response", rawOutput, {
     enabled: options.debug,
   });
@@ -327,6 +349,147 @@ function parseStructuredPayload(
     } (raw: ${dumpPath})`;
     throw new Error(message);
   }
+}
+
+function extractStructuredOutputText(response: Response): string {
+  const direct = (response.output_text ?? "").trim();
+  if (direct) {
+    return direct;
+  }
+
+  const payloadObject = findStructuredPayload(response.output);
+  if (payloadObject) {
+    return JSON.stringify(payloadObject);
+  }
+
+  const fallbackString = findJsonLikeString(response.output);
+  if (fallbackString) {
+    return fallbackString;
+  }
+
+  return "";
+}
+
+function findStructuredPayload(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet()
+): StructuredPayload | null {
+  if (isStructuredPayloadCandidate(value)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+    seen.add(value);
+    for (const entry of value) {
+      const found = findStructuredPayload(entry, seen);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (value && typeof value === "object") {
+    if (seen.has(value as object)) {
+      return null;
+    }
+    seen.add(value as object);
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      const found = findStructuredPayload(nested, seen);
+      if (found) {
+        return found;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isStructuredPayloadCandidate(value: unknown): value is StructuredPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.keyword !== "string" ||
+    typeof record.summary !== "string" ||
+    typeof record.pendingGaps !== "string" ||
+    !Array.isArray(record.sources)
+  ) {
+    return false;
+  }
+
+  const stats = record.stats as Record<string, unknown> | undefined;
+  if (
+    !stats ||
+    typeof stats !== "object" ||
+    typeof stats.primaryCount !== "number" ||
+    typeof stats.secondaryCount !== "number"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function findJsonLikeString(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet()
+): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (looksLikeJson(trimmed)) {
+      return trimmed;
+    }
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return null;
+    }
+    seen.add(value);
+    for (const entry of value) {
+      const found = findJsonLikeString(entry, seen);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (value && typeof value === "object") {
+    if (seen.has(value as object)) {
+      return null;
+    }
+    seen.add(value as object);
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      const found = findJsonLikeString(nested, seen);
+      if (found) {
+        return found;
+      }
+    }
+  }
+
+  return null;
+}
+
+function looksLikeJson(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
 }
 
 async function executeResponseWorkflow(
