@@ -551,6 +551,18 @@ function patchConsoleWithTimestamps() {
   }
 }
 
+function formatUsage(usage?: Response["usage"] | null): string {
+  if (!usage) return "";
+  const parts: string[] = [];
+  if (typeof usage.input_tokens === "number") {
+    parts.push(`in=${usage.input_tokens}`);
+  }
+  if (typeof usage.output_tokens === "number") {
+    parts.push(`out=${usage.output_tokens}`);
+  }
+  return parts.length ? `tokens(${parts.join("/")})` : "";
+}
+
 function ensureQuotableSources(keyword: string, sources: SourceEntry[]) {
   const MIN_EXCERPT_CHARS = 30;
   sources.forEach((source) => {
@@ -675,9 +687,10 @@ async function submitAndPollResponse(
       ? { previous_response_id: args.previousResponseId }
       : {}),
   };
+  const requestStartedAt = Date.now();
   const initialResponse = await client.responses.create(requestPayload);
   console.log(`🚀 [${args.keyword}] リクエスト送信: id=${initialResponse.id}`);
-  return pollResponseUntilTerminal(
+  const finalResponse = await pollResponseUntilTerminal(
     client,
     initialResponse.id,
     {
@@ -685,6 +698,14 @@ async function submitAndPollResponse(
     },
     args.timeoutMs
   );
+  const elapsedSec = ((Date.now() - requestStartedAt) / 1000).toFixed(1);
+  const tokenInfo = formatUsage(finalResponse.usage);
+  console.log(
+    `✅ [${args.keyword}] リクエスト id=${finalResponse.id} 完了 (${elapsedSec}秒${
+      tokenInfo ? ", " + tokenInfo : ""
+    })`
+  );
+  return finalResponse;
 }
 
 async function pollResponseUntilTerminal(
