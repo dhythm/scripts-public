@@ -85,9 +85,7 @@ patchConsoleWithTimestamps();
 const RUN_STARTED_AT = Date.now();
 process.once("exit", () => {
   const elapsedMs = Date.now() - RUN_STARTED_AT;
-  console.log(
-    `⏱️ トータル実行時間: ${(elapsedMs / 1000).toFixed(1)} 秒`
-  );
+  console.log(`⏱️ トータル実行時間: ${(elapsedMs / 1000).toFixed(1)} 秒`);
 });
 
 const structuredOutputSchema = {
@@ -182,7 +180,7 @@ const systemPrompt = `\
 - 信頼根拠(公式発表/オリジナル資料/著名報道など)を whyTrusted に書く。
 - publisher や publishedDate が不明な場合は "不明" 等のテキストを入れて必ず埋める。
 - pendingGaps には残課題/取得できなかった情報を必ず文章で記す。ギャップが無ければ "なし" と記載する。
-- source.excerpt には必ずページ本体から引用可能な本文(1〜2文、最大80語程度)を記載し、単なるリンク集やランディングページのみの記述は採用しない。
+- source.excerpt には必ずページ本体から引用可能な本文(3〜4文、最大200語程度)を記載し、単なるリンク集やランディングページのみの記述は採用しない。
 - ページ本文に具体的なデータ・記述が無い場合、そのソースは採用せず別のソースを探す。
 `;
 
@@ -435,7 +433,9 @@ function findStructuredPayload(
   return null;
 }
 
-function isStructuredPayloadCandidate(value: unknown): value is StructuredPayload {
+function isStructuredPayloadCandidate(
+  value: unknown
+): value is StructuredPayload {
   if (!value || typeof value !== "object") {
     return false;
   }
@@ -544,10 +544,12 @@ function looksLikeJson(text: string): boolean {
 function patchConsoleWithTimestamps() {
   const methods: ConsoleMethodName[] = ["log", "info", "warn", "error"];
   for (const method of methods) {
-    const original = console[method].bind(console) as (...args: unknown[]) => void;
+    const original = console[method].bind(console) as (
+      ...args: unknown[]
+    ) => void;
     console[method] = ((...args: unknown[]) => {
       original(`[${new Date().toISOString()}]`, ...args);
-    }) as typeof console[typeof method];
+    }) as (typeof console)[typeof method];
   }
 }
 
@@ -564,7 +566,7 @@ function formatUsage(usage?: Response["usage"] | null): string {
 }
 
 function ensureQuotableSources(keyword: string, sources: SourceEntry[]) {
-  const MIN_EXCERPT_CHARS = 30;
+  const MIN_EXCERPT_CHARS = 50;
   sources.forEach((source) => {
     const excerpt = source.excerpt?.trim() ?? "";
     if (excerpt.length < MIN_EXCERPT_CHARS) {
@@ -701,9 +703,9 @@ async function submitAndPollResponse(
   const elapsedSec = ((Date.now() - requestStartedAt) / 1000).toFixed(1);
   const tokenInfo = formatUsage(finalResponse.usage);
   console.log(
-    `✅ [${args.keyword}] リクエスト id=${finalResponse.id} 完了 (${elapsedSec}秒${
-      tokenInfo ? ", " + tokenInfo : ""
-    })`
+    `✅ [${args.keyword}] リクエスト id=${
+      finalResponse.id
+    } 完了 (${elapsedSec}秒${tokenInfo ? ", " + tokenInfo : ""})`
   );
   return finalResponse;
 }
