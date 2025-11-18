@@ -70,6 +70,45 @@ npm run primary-harvest -- \
 
 `--debug` を指定すると、実行中のツール呼び出し内容を `[debug]` 付きで標準出力に表示し、モデルから返った生テキストを `reports/debug/<slug>-response-<timestamp>.txt` に保存します。JSON 解析に失敗した場合は `--debug` の有無にかかわらず `reports/debug/<slug>-parse-error-...` が残るので、モデル出力を直接確認して原因調査ができます。
 
+## ソース逆引きアナライザー (`source-origin-analyzer.ts`)
+
+特定URLの本文を解析して「一次/二次/三次/その他」を判定するソースチェック機能と、必要に応じて一次・二次情報を逆引きする機能を組み合わせたツールです。三次情報と判断された場合は、OpenAI Responses API の `web_search` ツールを用いて根拠となる公式発表や信頼できる報道を追加で探索し、引用元の概要と信頼理由を整理します。モデルは `gpt-5-mini`（Responses API, `responses.create`）を利用します。
+
+### 前提
+
+- Node.js 18 以上
+- `npm install` 済み
+- 環境変数 `OPENAI_API_KEY`
+
+### 使い方
+
+```bash
+# URLの一次/二次/三次判定（JSON表示 & ファイル保存）
+npm run source-origin -- \
+  --url "https://example.com/case-study" \
+  --json \
+  --output reports/source-origin-example.json
+
+# web_search用の推定ロケーションを渡す例
+npm run source-origin -- \
+  --url "https://news.example.com/article" \
+  --country JP --region Tokyo --timezone Asia/Tokyo
+```
+
+主なオプション:
+
+| オプション | 説明 |
+| --- | --- |
+| `--url <URL>` | 判定対象のURL (必須) |
+| `--output <path>` | 結果JSONの保存先 |
+| `--json` | 判定結果をJSONで標準出力に表示 |
+| `--max-chars <n>` | LLMに渡す本文文字数の上限 (既定: 8000) |
+| `--debug` | 取得メタデータを表示 |
+| `--country/--region/--city/--timezone` | `web_search` へ渡す推定利用者位置 |
+
+標準出力では分類・理由・要約・主要主体を日本語で表示し、三次情報だった場合のみ逆引きした補完ソース一覧を追記します。`--json` を付ければAPIレスポンスをそのままログ保管や後続処理へ回せます。
+
+
 ## Text-to-Speech (`text-to-speech/`)
 
 OpenAI Text-to-Speech API を使用して日本語テキストを音声ファイルに変換するツールです。

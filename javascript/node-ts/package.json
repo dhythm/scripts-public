@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "primary-harvest": "tsx src/primary-source-harvester.ts",
-    "tts": "tsx src/text-to-speech/cli.ts"
+    "tts": "tsx src/text-to-speech/cli.ts",
+    "source-origin": "tsx src/source-origin-analyzer.ts"
   },
   "keywords": [
     "typescript",
