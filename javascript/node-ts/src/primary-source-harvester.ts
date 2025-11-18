@@ -81,6 +81,13 @@ const POLL_INTERVAL_MS = 1500;
 type ConsoleMethodName = "log" | "info" | "warn" | "error";
 
 patchConsoleWithTimestamps();
+const RUN_STARTED_AT = Date.now();
+process.once("exit", () => {
+  const elapsedMs = Date.now() - RUN_STARTED_AT;
+  console.log(
+    `⏱️ トータル実行時間: ${(elapsedMs / 1000).toFixed(1)} 秒`
+  );
+});
 
 const structuredOutputSchema = {
   name: "source_harvest_payload",
