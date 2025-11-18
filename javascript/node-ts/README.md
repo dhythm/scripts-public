@@ -35,6 +35,7 @@ npm run primary-harvest -- \
 | `--max-passes <n>` | モデルに許可するツール呼び出しループの上限 (既定: 6) |
 | `-o, --output <path>` | 結果を保存するファイルパス。省略時は標準出力に JSON を表示 |
 | `--country/--region/--city/--timezone` | `web_search` に渡す利用者位置 (任意) |
+| `--debug` | モデル出力やツール呼び出しを詳細ログとして表示し、`reports/debug/` に生レスポンスを保存 |
 
 ### 出力フォーマット
 
@@ -64,3 +65,7 @@ npm run primary-harvest -- \
 ```
 
 `sources` には各リンクの分類・説明・信頼根拠が含まれるため、そのままレポート資料の一次情報メモとして利用できます。
+
+### デバッグログ
+
+`--debug` を指定すると、実行中のツール呼び出し内容を `[debug]` 付きで標準出力に表示し、モデルから返った生テキストを `reports/debug/<slug>-response-<timestamp>.txt` に保存します。JSON 解析に失敗した場合は `--debug` の有無にかかわらず `reports/debug/<slug>-parse-error-...` が残るので、モデル出力を直接確認して原因調査ができます。

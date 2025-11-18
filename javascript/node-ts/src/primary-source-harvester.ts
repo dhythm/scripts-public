@@ -1,12 +1,13 @@
 import { parse as parseHtml } from "node-html-parser";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import OpenAI from "openai";
 import type {
   FunctionTool,
   Response,
   ResponseFunctionToolCallItem,
+  ResponseFunctionWebSearch,
   ResponseInputItem,
   WebSearchTool,
 } from "openai/resources/responses/responses";
@@ -19,6 +20,7 @@ interface CliOptions {
   maxToolPasses: number;
   outputPath?: string;
   userLocation?: WebSearchTool["user_location"];
+  debug: boolean;
 }
 
 interface SourceEntry {
@@ -71,6 +73,8 @@ const DEFAULT_SECONDARY_MIN = 2;
 const DEFAULT_PDF_LIMIT = 5;
 const DEFAULT_TOOL_PASSES = 6;
 const PDF_SEARCH_TOOL_NAME = "pdf_search";
+const DEBUG_DIR = "reports/debug";
+const POLL_INTERVAL_MS = 1500;
 
 const structuredOutputSchema = {
   name: "source_harvest_payload",
@@ -255,13 +259,35 @@ async function harvestKeyword(
     },
   } as const;
 
-  const response = await runResponseLoop(client, {
+  const response = await executeResponseWorkflow(client, {
     baseParams,
     initialInput,
     maxPasses: options.maxToolPasses,
+    debug: options.debug,
+    keyword,
   });
 
-  const parsed = parseStructuredPayload(response.output_text);
+  const rawOutput = response.output_text ?? "";
+  const dumpPath = dumpRawResponse(keyword, "response", rawOutput, {
+    enabled: options.debug,
+  });
+  if (dumpPath) {
+    debugLog(
+      options.debug,
+      `[${keyword}] モデル出力を ${dumpPath} に保存しました`
+    );
+  }
+  if (options.debug) {
+    debugLog(
+      options.debug,
+      `[${keyword}] 出力プレビュー: ${truncate(rawOutput, 200)}`
+    );
+  }
+
+  const parsed = parseStructuredPayload(rawOutput, {
+    keyword,
+    debug: options.debug,
+  });
   return {
     keyword: parsed.keyword,
     summary: parsed.summary,
@@ -280,17 +306,30 @@ function buildUserPrompt(keyword: string, options: CliOptions): string {
   );
 }
 
-function parseStructuredPayload(rawText: string): StructuredPayload {
+function parseStructuredPayload(
+  rawText: string,
+  context: { keyword: string; debug: boolean }
+): StructuredPayload {
   try {
     return JSON.parse(rawText) as StructuredPayload;
   } catch (error) {
-    throw new Error(
-      `JSON出力の解析に失敗しました: ${(error as Error).message}`
+    const dumpPath = dumpRawResponse(context.keyword, "parse-error", rawText, {
+      always: true,
+    });
+    console.error(
+      `⚠️ JSON出力の解析に失敗しました (${context.keyword}). rawを ${dumpPath} に保存しました`
     );
+    if (context.debug) {
+      console.error(`[debug] raw output: ${rawText}`);
+    }
+    const message = `JSON出力の解析に失敗しました: ${
+      (error as Error).message
+    } (raw: ${dumpPath})`;
+    throw new Error(message);
   }
 }
 
-async function runResponseLoop(
+async function executeResponseWorkflow(
   client: OpenAI,
   params: {
     baseParams: {
@@ -302,23 +341,36 @@ async function runResponseLoop(
     };
     initialInput: ResponseInputItem[];
     maxPasses: number;
+    debug: boolean;
+    keyword: string;
   }
 ): Promise<Response> {
   let passCount = 0;
-  let response = await client.responses.create({
-    ...params.baseParams,
+  let previousResponseId: string | undefined;
+
+  let response = await submitAndPollResponse(client, {
+    baseParams: params.baseParams,
     input: params.initialInput,
+    keyword: params.keyword,
+    debug: params.debug,
   });
 
   while (true) {
+    logToolActivities(response, params.keyword);
+
     const pendingCalls = extractFunctionCalls(response);
     if (pendingCalls.length === 0) {
-      if (response.status === "in_progress") {
-        await delay(1000);
-        response = await client.responses.retrieve(response.id);
-        continue;
+      if (response.status === "completed") {
+        return response;
       }
-      return response;
+      if (response.status === "failed" || response.status === "cancelled") {
+        const message =
+          response.error?.message ?? "OpenAIレスポンスが失敗しました";
+        throw new Error(`[${params.keyword}] モデル実行失敗: ${message}`);
+      }
+      throw new Error(
+        `[${params.keyword}] モデルが終了しましたがツール呼び出しも完了していません (status=${response.status})`
+      );
     }
 
     if (passCount >= params.maxPasses) {
@@ -326,10 +378,18 @@ async function runResponseLoop(
     }
 
     passCount += 1;
+    console.log(
+      `🛠️ [${params.keyword}] ツール呼び出し #${passCount}: ${pendingCalls
+        .map((call) => call.name)
+        .join(", ")}`
+    );
     const toolOutputs = await Promise.all(
       pendingCalls.map(
         async (call): Promise<ResponseInputItem.FunctionCallOutput> => {
-          const payload = await handleFunctionCall(call);
+          const payload = await handleFunctionCall(call, {
+            debug: params.debug,
+            keyword: params.keyword,
+          });
           return {
             type: "function_call_output",
             call_id: call.id,
@@ -339,11 +399,77 @@ async function runResponseLoop(
       )
     );
 
-    response = await client.responses.create({
-      ...params.baseParams,
-      previous_response_id: response.id,
+    previousResponseId = response.id;
+    response = await submitAndPollResponse(client, {
+      baseParams: params.baseParams,
       input: toolOutputs,
+      previousResponseId,
+      keyword: params.keyword,
+      debug: params.debug,
     });
+  }
+}
+
+async function submitAndPollResponse(
+  client: OpenAI,
+  args: {
+    baseParams: {
+      model: string;
+      instructions: string;
+      tools: Response["tools"];
+      parallel_tool_calls: boolean;
+      text: Response["text"];
+    };
+    input: ResponseInputItem[];
+    previousResponseId?: string;
+    keyword: string;
+    debug: boolean;
+  }
+): Promise<Response> {
+  const requestPayload = {
+    ...args.baseParams,
+    input: args.input,
+    background: true,
+    ...(args.previousResponseId
+      ? { previous_response_id: args.previousResponseId }
+      : {}),
+  };
+  const initialResponse = await client.responses.create(requestPayload);
+  console.log(`🚀 [${args.keyword}] リクエスト送信: id=${initialResponse.id}`);
+  return pollResponseUntilTerminal(client, initialResponse.id, {
+    keyword: args.keyword,
+  });
+}
+
+async function pollResponseUntilTerminal(
+  client: OpenAI,
+  responseId: string,
+  context: { keyword: string }
+): Promise<Response> {
+  let lastStatus: Response["status"] | undefined;
+  while (true) {
+    const response = await client.responses.retrieve(responseId);
+    if (response.status !== lastStatus) {
+      console.log(`⌛ [${context.keyword}] ステータス: ${response.status}`);
+      lastStatus = response.status;
+    }
+
+    if (response.status === "in_progress" || response.status === "queued") {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (response.status === "failed") {
+      const message =
+        response.error?.message ?? "OpenAIレスポンスが失敗しました";
+      throw new Error(`[${context.keyword}] モデル実行失敗: ${message}`);
+    }
+
+    if (response.status === "cancelled") {
+      throw new Error(`[${context.keyword}] モデル実行がキャンセルされました`);
+    }
+
+    return response;
   }
 }
 
@@ -362,7 +488,35 @@ function extractFunctionCalls(
   return calls;
 }
 
-async function handleFunctionCall(call: ResponseFunctionToolCallItem) {
+function logToolActivities(response: Response, keyword: string) {
+  const logs: string[] = [];
+  for (const item of response.output ?? []) {
+    if (item.type === "function_call") {
+      logs.push(
+        `📎 [${keyword}] 関数ツール '${item.name}' を呼び出し (status=${
+          item.status ?? "pending"
+        })`
+      );
+    } else if (isWebSearchCall(item)) {
+      logs.push(`🌐 [${keyword}] web_search ステータス: ${item.status}`);
+    }
+  }
+
+  for (const line of logs) {
+    console.log(line);
+  }
+}
+
+function isWebSearchCall(
+  item: Response["output"][number]
+): item is ResponseFunctionWebSearch {
+  return (item as ResponseFunctionWebSearch)?.type === "web_search_call";
+}
+
+async function handleFunctionCall(
+  call: ResponseFunctionToolCallItem,
+  context: { debug: boolean; keyword: string }
+) {
   if (call.name !== PDF_SEARCH_TOOL_NAME) {
     return { error: `未対応の関数です: ${call.name}` };
   }
@@ -379,8 +533,18 @@ async function handleFunctionCall(call: ResponseFunctionToolCallItem) {
   }
 
   const limit = clampNumber(args.max_results ?? DEFAULT_PDF_LIMIT, 1, 10);
+  debugLog(
+    context.debug,
+    `[${context.keyword}] pdf_search start: query="${
+      args.query
+    }" limit=${limit} filters=${(args.site_filters ?? []).join(",")}`
+  );
   try {
     const hits = await pdfSearch(args.query, limit, args.site_filters ?? []);
+    debugLog(
+      context.debug,
+      `[${context.keyword}] pdf_search hits=${hits.length}`
+    );
     return { query: args.query, hits };
   } catch (error) {
     return { query: args.query, hits: [], error: (error as Error).message };
@@ -506,6 +670,7 @@ function parseCliOptions(): CliOptions {
       region: { type: "string" },
       city: { type: "string" },
       timezone: { type: "string" },
+      debug: { type: "boolean" },
     },
     allowPositionals: true,
   });
@@ -558,6 +723,7 @@ function parseCliOptions(): CliOptions {
     maxToolPasses,
     outputPath: values.output,
     userLocation,
+    debug: Boolean(values.debug),
   };
 }
 
@@ -582,6 +748,44 @@ function ensureParentDir(pathStr: string) {
       `出力ディレクトリ作成に失敗しました: ${(error as Error).message}`
     );
   }
+}
+
+function debugLog(enabled: boolean, message: string) {
+  if (enabled) {
+    console.log(`[debug] ${message}`);
+  }
+}
+
+function dumpRawResponse(
+  keyword: string,
+  reason: string,
+  rawText: string,
+  options: { enabled?: boolean; always?: boolean } = {}
+): string | null {
+  const shouldWrite = options.always || options.enabled;
+  if (!shouldWrite) {
+    return null;
+  }
+  const safeName = slugify(keyword) || "keyword";
+  const filename = `${safeName}-${reason}-${Date.now()}.txt`;
+  const filePath = join(DEBUG_DIR, filename);
+  ensureParentDir(filePath);
+  writeFileSync(filePath, rawText ?? "", "utf-8");
+  return filePath;
+}
+
+function slugify(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+}
+
+function truncate(text: string, length: number): string {
+  if (text.length <= length) return text;
+  return `${text.slice(0, length)}…`;
 }
 
 main().catch((error) => {
