@@ -12,6 +12,8 @@ import type {
   WebSearchTool,
 } from "openai/resources/responses/responses";
 
+type PdfStrategy = "auto" | "always" | "never";
+
 interface CliOptions {
   keywords: string[];
   minPrimary: number;
@@ -22,6 +24,7 @@ interface CliOptions {
   userLocation?: WebSearchTool["user_location"];
   debug: boolean;
   responseTimeoutMs: number;
+  pdfStrategy: PdfStrategy;
 }
 
 interface SourceEntry {
@@ -74,6 +77,7 @@ const DEFAULT_PRIMARY_MIN = 2;
 const DEFAULT_SECONDARY_MIN = 2;
 const DEFAULT_PDF_LIMIT = 5;
 const DEFAULT_TOOL_PASSES = 6;
+const DEFAULT_PDF_STRATEGY: PdfStrategy = "auto";
 const DEFAULT_RESPONSE_TIMEOUT_MS = 120_000;
 const PDF_SEARCH_TOOL_NAME = "pdf_search";
 const DEBUG_DIR = "reports/debug";
@@ -256,7 +260,7 @@ async function harvestKeyword(
       user_location: options.userLocation,
       search_context_size: "medium",
     },
-    pdfSearchTool,
+    ...(options.pdfStrategy === "never" ? [] : [pdfSearchTool]),
   ];
 
   const baseParams = {
@@ -339,11 +343,22 @@ async function harvestKeyword(
 }
 
 function buildUserPrompt(keyword: string, options: CliOptions): string {
+  const pdfPolicyDescription = (() => {
+    switch (options.pdfStrategy) {
+      case "never":
+        return "PDF取得は不要。必要な情報はウェブ本文から引用すること。";
+      case "always":
+        return "各テーマでPDFが存在する場合は必ず取得し、本文から引用すること。";
+      default:
+        return "PDFが有用な場合のみ取得し、不要ならウェブ本文のみに頼ること。";
+    }
+  })();
+
   return (
     `対象キーワード: ${keyword}\n` +
     `一次情報目標: ${options.minPrimary}件以上\n` +
     `二次情報目標: ${options.minSecondary}件以上\n` +
-    `PDFが有用な場合は pdf_search を必ず呼び出すこと。`
+    `PDF方針: ${pdfPolicyDescription}`
   );
 }
 
@@ -952,6 +967,7 @@ function parseCliOptions(): CliOptions {
       "secondary-min": { type: "string" },
       "pdf-limit": { type: "string" },
       "max-passes": { type: "string" },
+      "pdf-strategy": { type: "string" },
       "response-timeout": { type: "string" },
       output: { type: "string", short: "o" },
       country: { type: "string" },
@@ -995,6 +1011,7 @@ function parseCliOptions(): CliOptions {
     10_000,
     600_000
   );
+  const pdfStrategy = parsePdfStrategy(values["pdf-strategy"]);
 
   const hasLocation =
     values.country || values.region || values.city || values.timezone;
@@ -1018,6 +1035,7 @@ function parseCliOptions(): CliOptions {
     userLocation,
     debug: Boolean(values.debug),
     responseTimeoutMs,
+    pdfStrategy,
   };
 }
 
@@ -1025,6 +1043,18 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parsePdfStrategy(value: string | undefined): PdfStrategy {
+  if (!value) return DEFAULT_PDF_STRATEGY;
+  const normalized = value.toLowerCase();
+  if (normalized === "auto" || normalized === "always" || normalized === "never") {
+    return normalized as PdfStrategy;
+  }
+  console.warn(
+    `未知の pdf-strategy '${value}' が指定されたため '${DEFAULT_PDF_STRATEGY}' を使用します`
+  );
+  return DEFAULT_PDF_STRATEGY;
 }
 
 function delay(ms: number): Promise<void> {
