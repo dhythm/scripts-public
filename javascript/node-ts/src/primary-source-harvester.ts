@@ -76,6 +76,10 @@ const PDF_SEARCH_TOOL_NAME = "pdf_search";
 const DEBUG_DIR = "reports/debug";
 const POLL_INTERVAL_MS = 1500;
 
+type ConsoleMethodName = "log" | "info" | "warn" | "error";
+
+patchConsoleWithTimestamps();
+
 const structuredOutputSchema = {
   name: "source_harvest_payload",
   schema: {
@@ -504,6 +508,16 @@ function looksLikeJson(text: string): boolean {
     (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
     (trimmed.startsWith("[") && trimmed.endsWith("]"))
   );
+}
+
+function patchConsoleWithTimestamps() {
+  const methods: ConsoleMethodName[] = ["log", "info", "warn", "error"];
+  for (const method of methods) {
+    const original = console[method].bind(console) as (...args: unknown[]) => void;
+    console[method] = ((...args: unknown[]) => {
+      original(`[${new Date().toISOString()}]`, ...args);
+    }) as typeof console[typeof method];
+  }
 }
 
 async function executeResponseWorkflow(
