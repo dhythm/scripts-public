@@ -8,7 +8,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "primary-harvest": "tsx src/primary-source-harvester.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "primary-harvest": "tsx src/primary-source-harvester.ts",
+    "tts": "tsx src/text-to-speech/cli.ts"
   },
   "keywords": [
     "typescript",
@@ -19,7 +22,8 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.10"
   },
   "dependencies": {
     "node-html-parser": "^7.0.1",
