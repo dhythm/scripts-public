@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Faster-Whisperを使用した音声文字起こしツール
+Faster-Whisperを使用した音声/動画文字起こしツール
 
 使用方法:
-    python transcribe_faster_whisper.py <音声ファイル> [オプション]
+    python transcribe_faster_whisper.py <音声/動画ファイル> [オプション]
 
 例:
     python transcribe_faster_whisper.py input.mp3 --model large-v2 --language ja
     python transcribe_faster_whisper.py input.wav --device cuda --compute_type float16
+    python transcribe_faster_whisper.py video.mp4 --model large-v2 --language ja
 """
 
 import argparse
 import json
-import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -31,8 +33,10 @@ except ImportError:
 
 class FasterWhisperTranscriber:
     """Faster-Whisperを使用した音声文字起こしクラス"""
-    
-    SUPPORTED_FORMATS = {'.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg', '.wma'}
+
+    SUPPORTED_AUDIO_FORMATS = {'.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg', '.wma'}
+    SUPPORTED_VIDEO_FORMATS = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.wmv', '.flv'}
+    SUPPORTED_FORMATS = SUPPORTED_AUDIO_FORMATS | SUPPORTED_VIDEO_FORMATS
     MODEL_SIZES = [
         'tiny', 'tiny.en', 'base', 'base.en', 
         'small', 'small.en', 'medium', 'medium.en',
@@ -84,24 +88,77 @@ class FasterWhisperTranscriber:
         self.device = device
         print(f"モデル '{model_name}' のロードが完了しました。")
     
-    def validate_audio_file(self, file_path: Path) -> None:
-        """音声ファイルの検証"""
+    def is_video_file(self, file_path: Path) -> bool:
+        """動画ファイルかどうかを判定"""
+        return file_path.suffix.lower() in self.SUPPORTED_VIDEO_FORMATS
+
+    def extract_audio_from_video(self, video_path: Path, output_dir: Path) -> Path:
+        """
+        動画ファイルから音声を抽出
+
+        Args:
+            video_path: 動画ファイルのパス
+            output_dir: 出力ディレクトリ
+
+        Returns:
+            抽出した音声ファイルのパス
+        """
+        print(f"動画ファイルから音声を抽出中: {video_path.name}")
+
+        output_path = output_dir / f"{video_path.stem}_audio.wav"
+
+        cmd = [
+            'ffmpeg',
+            '-i', str(video_path),
+            '-vn',                    # 映像なし
+            '-acodec', 'pcm_s16le',   # 16bit PCM
+            '-ar', '16000',           # 16kHz (Whisper推奨)
+            '-ac', '1',               # モノラル
+            '-y',                     # 上書き確認なし
+            str(output_path)
+        ]
+
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print(f"音声抽出完了: {output_path}")
+            return output_path
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ffmpegエラー: {e.stderr}")
+        except FileNotFoundError:
+            raise RuntimeError(
+                "ffmpegが見つかりません。ffmpegをインストールしてください。\n"
+                "macOS: brew install ffmpeg\n"
+                "Ubuntu: sudo apt install ffmpeg"
+            )
+
+    def validate_input_file(self, file_path: Path) -> None:
+        """入力ファイル（音声/動画）の検証"""
         if not file_path.exists():
             raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
-        
+
         if not file_path.is_file():
             raise ValueError(f"パスがファイルではありません: {file_path}")
-        
+
         if file_path.suffix.lower() not in self.SUPPORTED_FORMATS:
             raise ValueError(
                 f"サポートされていないファイル形式: {file_path.suffix}\n"
-                f"サポートされている形式: {', '.join(self.SUPPORTED_FORMATS)}"
+                f"サポートされている音声形式: {', '.join(sorted(self.SUPPORTED_AUDIO_FORMATS))}\n"
+                f"サポートされている動画形式: {', '.join(sorted(self.SUPPORTED_VIDEO_FORMATS))}"
             )
-        
+
         # ファイルサイズチェック（1GB以上は警告）
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
         if file_size_mb > 1024:
             print(f"警告: ファイルサイズが大きいです ({file_size_mb:.1f} MB)。処理に時間がかかる可能性があります。")
+
+    def validate_audio_file(self, file_path: Path) -> None:
+        """音声ファイルの検証（後方互換性のため残す）"""
+        self.validate_input_file(file_path)
     
     def apply_noise_reduction(
         self,
@@ -290,8 +347,21 @@ class FasterWhisperTranscriber:
         Returns:
             文字起こし結果の辞書
         """
-        audio_path = Path(audio_path)
-        self.validate_audio_file(audio_path)
+        input_path = Path(audio_path)
+        self.validate_input_file(input_path)
+
+        # 動画ファイルの場合は音声を抽出
+        video_temp_dir = None
+        extracted_audio_path = None
+
+        if self.is_video_file(input_path):
+            video_temp_dir = tempfile.mkdtemp(prefix="whisper_video_")
+            extracted_audio_path = self.extract_audio_from_video(
+                input_path, Path(video_temp_dir)
+            )
+            audio_path = extracted_audio_path
+        else:
+            audio_path = input_path
 
         # デフォルトVADパラメータ（小さい音声に最適化）
         if vad_parameters is None and vad_filter:
@@ -398,6 +468,13 @@ class FasterWhisperTranscriber:
             # 一時ファイルの削除
             if temp_file and temp_file.exists():
                 temp_file.unlink()
+
+            # 動画から抽出した一時ファイルの削除
+            if extracted_audio_path and extracted_audio_path.exists():
+                extracted_audio_path.unlink()
+            if video_temp_dir:
+                import shutil
+                shutil.rmtree(video_temp_dir, ignore_errors=True)
     
     def save_result(
         self,
@@ -530,31 +607,38 @@ class FasterWhisperTranscriber:
 def main():
     """メイン関数"""
     parser = argparse.ArgumentParser(
-        description='Faster-Whisperを使用した音声文字起こしツール',
+        description='Faster-Whisperを使用した音声/動画文字起こしツール',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
   # 基本的な使用方法
   %(prog)s input.mp3
-  
+
   # モデルと言語を指定
   %(prog)s input.mp3 --model large-v2 --language ja
-  
+
   # GPUを使用して高速処理
   %(prog)s input.wav --device cuda --compute_type float16
-  
+
+  # 動画ファイルから文字起こし
+  %(prog)s video.mp4 --model large-v2 --language ja
+
   # 単語レベルのタイムスタンプ付きJSON出力
   %(prog)s input.mp4 --format json --word_timestamps --output result.json
-  
+
   # WebVTT字幕形式で出力
   %(prog)s input.mp3 --format vtt --output subtitles.vtt
+
+サポートされる形式:
+  音声: mp3, wav, m4a, flac, aac, ogg, wma
+  動画: mp4, mkv, avi, mov, webm, wmv, flv (ffmpeg必須)
         """
     )
     
     parser.add_argument(
         'audio_file',
         type=Path,
-        help='文字起こしする音声ファイル'
+        help='文字起こしする音声/動画ファイル'
     )
     
     parser.add_argument(
