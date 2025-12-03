@@ -4,17 +4,163 @@
 縦書きPDFから読みやすいMarkdownファイルを生成する統合スクリプト
 
 使い方:
-    python3 pdf_to_markdown.py <PDFファイルのパス> [出力ファイルのパス]
+    python3 pdf_to_markdown.py <PDFファイルのパス> [-o 出力ファイル] [--llm] [--batch-size N]
 
 例:
     python3 pdf_to_markdown.py book.pdf
-    python3 pdf_to_markdown.py book.pdf output.md
+    python3 pdf_to_markdown.py book.pdf -o output.md
+    python3 pdf_to_markdown.py book.pdf --llm
+    python3 pdf_to_markdown.py book.pdf --llm --batch-size 3
+
+オプション:
+    --llm           LLM校正を使用（長音記号補完、重複除去など）
+    --batch-size N  LLM処理時のページ数（デフォルト: 1）
+
+環境変数:
+    OPENAI_API_KEY  --llm使用時に必要
 """
 
 import sys
 import re
+import os
+import time
+import argparse
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+# .envファイルから環境変数を読み込む
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenvがなくても動作する
+
+
+def proofread_with_llm(text: str, page_num: int = 0, max_retries: int = 3) -> str:
+    """
+    LLMを使用してテキストを校正する
+
+    Args:
+        text: 校正対象のテキスト
+        page_num: ページ番号（デバッグ用）
+        max_retries: リトライ回数
+
+    Returns:
+        校正済みテキスト
+    """
+    from openai import OpenAI
+
+    if not text.strip():
+        return text
+
+    client = OpenAI()
+
+    system_prompt = """あなたは日本語書籍のOCR校正者です。以下のルールに従って校正してください:
+
+1. 長音記号の補完: 「でしう」→「でしょう」、「なている」→「なっている」
+2. ヘッダー/フッターの除去: ページ番号、章タイトルの繰り返しを削除
+3. 重複段落の除去: 同じ内容が2回出現している場合は1つに
+4. 文章の自然な結合: 不自然に分断された文を結合
+5. 原文の意味を変えない: 校正のみ、要約や追加はしない
+
+出力は校正後のテキストのみ。説明は不要。"""
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.1
+            )
+
+            return response.choices[0].message.content or text
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"  ⚠ API エラー（ページ{page_num}）、{wait_time}秒後にリトライ: {e}")
+                time.sleep(wait_time)
+            else:
+                print(f"  ✗ API エラー（ページ{page_num}）、元のテキストを使用: {e}")
+                return text
+
+    return text
+
+
+def extract_pages_text(
+    pdf_path: str,
+    header_ratio: float = 0.12,
+    footer_ratio: float = 0.13
+) -> List[str]:
+    """
+    PDFから各ページのテキストをリストで取得
+
+    Args:
+        pdf_path: PDFファイルのパス
+        header_ratio: ページ上部の除外比率
+        footer_ratio: ページ下部の除外比率
+
+    Returns:
+        ページごとのテキストのリスト
+    """
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LAParams, LTTextBox
+
+    laparams = LAParams(detect_vertical=True, all_texts=True)
+    pages_text = []
+
+    for page_layout in extract_pages(pdf_path, laparams=laparams):
+        page_height = page_layout.height
+        header_boundary = page_height * (1 - header_ratio)
+        footer_boundary = page_height * footer_ratio
+
+        page_elements = []
+        for element in page_layout:
+            if isinstance(element, LTTextBox):
+                x0, y0, x1, y1 = element.bbox
+                # ヘッダー/フッター領域を除外
+                if y1 <= header_boundary and y0 >= footer_boundary:
+                    page_elements.append(element.get_text())
+
+        pages_text.append('\n'.join(page_elements))
+
+    return pages_text
+
+
+def extract_text_with_llm(
+    pdf_path: str,
+    batch_size: int = 1
+) -> Optional[str]:
+    """
+    PDFからテキストを抽出し、LLM校正を適用する
+
+    Args:
+        pdf_path: PDFファイルのパス
+        batch_size: 一度に処理するページ数
+
+    Returns:
+        校正済みテキスト
+    """
+    print("ページ単位でテキストを抽出中...")
+    pages = extract_pages_text(pdf_path)
+    total = len(pages)
+    print(f"✓ {total}ページを抽出")
+
+    proofread_pages = []
+
+    for i in range(0, total, batch_size):
+        batch = pages[i:i+batch_size]
+        batch_text = '\n\n'.join(batch)
+
+        page_range = f"{i+1}" if batch_size == 1 else f"{i+1}-{min(i+batch_size, total)}"
+        print(f"  校正中... {page_range}/{total}ページ")
+        proofread_text = proofread_with_llm(batch_text, page_num=i+1)
+        proofread_pages.append(proofread_text)
+
+    return '\n\n'.join(proofread_pages)
 
 
 def get_margin_texts(
@@ -346,13 +492,20 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
     return ''.join(result_lines)
 
 
-def convert_pdf_to_markdown(pdf_path: str, output_path: Optional[str] = None) -> bool:
+def convert_pdf_to_markdown(
+    pdf_path: str,
+    output_path: Optional[str] = None,
+    use_llm: bool = False,
+    batch_size: int = 1
+) -> bool:
     """
     PDFファイルをMarkdownファイルに変換する
 
     Args:
         pdf_path: PDFファイルのパス
         output_path: 出力ファイルのパス（省略時は自動生成）
+        use_llm: LLM校正を使用するか
+        batch_size: LLM処理時のバッチサイズ
 
     Returns:
         成功時True、失敗時False
@@ -369,16 +522,28 @@ def convert_pdf_to_markdown(pdf_path: str, output_path: Optional[str] = None) ->
     else:
         output_path = Path(output_path)
 
+    mode_str = "LLM校正あり" if use_llm else "標準モード"
     print(f"\n{'='*60}")
-    print(f"PDF→Markdown変換")
+    print(f"PDF→Markdown変換（{mode_str}）")
     print(f"{'='*60}")
     print(f"入力: {pdf_file}")
     print(f"出力: {output_path}")
+    if use_llm:
+        print(f"バッチサイズ: {batch_size}ページ")
     print(f"{'='*60}\n")
 
     # ステップ1: PDFからテキストを抽出
-    print("[1/2] PDFからテキストを抽出中...")
-    extracted_text = extract_text_from_pdf(str(pdf_file))
+    if use_llm:
+        print("[1/2] PDFからテキストを抽出・LLM校正中...")
+        try:
+            extracted_text = extract_text_with_llm(str(pdf_file), batch_size=batch_size)
+        except Exception as e:
+            print(f"\n✗ エラー: LLM処理に失敗しました: {e}")
+            print("OPENAI_API_KEY が設定されていることを確認してください。")
+            return False
+    else:
+        print("[1/2] PDFからテキストを抽出中...")
+        extracted_text = extract_text_from_pdf(str(pdf_file))
 
     if not extracted_text:
         print("\n✗ エラー: テキストの抽出に失敗しました")
@@ -414,21 +579,44 @@ def convert_pdf_to_markdown(pdf_path: str, output_path: Optional[str] = None) ->
 
 def main():
     """メイン処理"""
-    # コマンドライン引数の処理
-    if len(sys.argv) < 2:
-        print("使い方: python3 pdf_to_markdown.py <PDFファイル> [出力ファイル]")
-        print("\n例:")
-        print("  python3 pdf_to_markdown.py book.pdf")
-        print("  python3 pdf_to_markdown.py book.pdf output.md")
-        print("\n必要なライブラリ:")
-        print("  pip install pdfminer.six pdfplumber PyPDF2")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description='縦書きPDFから読みやすいMarkdownファイルを生成する',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+例:
+  python3 pdf_to_markdown.py book.pdf
+  python3 pdf_to_markdown.py book.pdf -o output.md
+  python3 pdf_to_markdown.py book.pdf --llm
+  python3 pdf_to_markdown.py book.pdf --llm --batch-size 3
 
-    pdf_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+必要なライブラリ:
+  pip install pdfminer.six pdfplumber PyPDF2 openai
+'''
+    )
+
+    parser.add_argument('pdf_path', help='PDFファイルのパス')
+    parser.add_argument('-o', '--output', help='出力ファイルのパス（省略時は自動生成）')
+    parser.add_argument(
+        '--llm',
+        action='store_true',
+        help='LLM校正を使用（OPENAI_API_KEY が必要）'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1,
+        help='LLM処理時のバッチサイズ（デフォルト: 1ページ）'
+    )
+
+    args = parser.parse_args()
 
     # 変換実行
-    success = convert_pdf_to_markdown(pdf_path, output_path)
+    success = convert_pdf_to_markdown(
+        args.pdf_path,
+        args.output,
+        use_llm=args.llm,
+        batch_size=args.batch_size
+    )
 
     sys.exit(0 if success else 1)
 
