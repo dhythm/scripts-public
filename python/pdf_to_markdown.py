@@ -14,20 +14,116 @@
 import sys
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 
-def extract_text_from_pdf(pdf_path: str) -> Optional[str]:
+def get_margin_texts(
+    pdf_path: str,
+    header_ratio: float = 0.12,
+    footer_ratio: float = 0.13
+) -> set:
+    """
+    座標情報を使用してヘッダー/フッター領域にあるテキストを特定する
+
+    pdfminer.sixのextract_pages()を使用して、各テキストボックスの座標を取得し、
+    ページ上部・下部のマージン領域にあるテキストを収集する。
+
+    Args:
+        pdf_path: PDFファイルのパス
+        header_ratio: ページ上部の除外比率（デフォルト5%）
+        footer_ratio: ページ下部の除外比率（デフォルト5%）
+
+    Returns:
+        ヘッダー/フッター領域にあるテキストのセット
+    """
+    margin_texts: set = set()
+
+    try:
+        from pdfminer.high_level import extract_pages
+        from pdfminer.layout import LAParams, LTTextBox
+    except ImportError:
+        return margin_texts
+
+    laparams = LAParams(
+        detect_vertical=True,
+        all_texts=True
+    )
+
+    try:
+        for page_layout in extract_pages(pdf_path, laparams=laparams):
+            page_height = page_layout.height
+            header_boundary = page_height * (1 - header_ratio)
+            footer_boundary = page_height * footer_ratio
+
+            for element in page_layout:
+                if isinstance(element, LTTextBox):
+                    x0, y0, x1, y1 = element.bbox
+
+                    # ヘッダー/フッター領域のテキストを収集
+                    if y1 > header_boundary or y0 < footer_boundary:
+                        text = element.get_text().strip()
+                        if text:
+                            # 改行で分割して各行を追加
+                            for line in text.split('\n'):
+                                line = line.strip()
+                                if line:
+                                    margin_texts.add(line)
+
+    except Exception as e:
+        print(f"⚠ マージンテキスト取得でエラー: {e}")
+
+    return margin_texts
+
+
+def remove_margin_texts(text: str, margin_texts: set) -> str:
+    """
+    抽出されたテキストからヘッダー/フッターのテキストを除去する
+
+    Args:
+        text: 抽出されたテキスト
+        margin_texts: 除去するテキストのセット
+
+    Returns:
+        ヘッダー/フッターを除去したテキスト
+    """
+    if not margin_texts:
+        return text
+
+    lines = text.split('\n')
+    filtered_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        # 完全一致でマージンテキストを除去
+        if stripped and stripped not in margin_texts:
+            filtered_lines.append(line)
+        elif not stripped:
+            # 空行は保持
+            filtered_lines.append(line)
+
+    return '\n'.join(filtered_lines)
+
+
+def extract_text_from_pdf(pdf_path: str, exclude_margins: bool = True) -> Optional[str]:
     """
     PDFからテキストを抽出する
 
     Args:
         pdf_path: PDFファイルのパス
+        exclude_margins: ヘッダー/フッター領域を除外するか（デフォルトTrue）
 
     Returns:
         抽出されたテキスト、失敗時はNone
     """
-    # まずpdfminer.sixを試す（縦書きに最適）
+    # ヘッダー/フッターのテキストを事前に収集
+    margin_texts: set = set()
+    if exclude_margins:
+        print("ヘッダー/フッター領域のテキストを特定中...")
+        margin_texts = get_margin_texts(pdf_path)
+        if margin_texts:
+            print(f"✓ {len(margin_texts)}個のマージンテキストを特定")
+
+    # pdfminer.sixのextract_text()を試す（レイアウト保持）
     try:
         from pdfminer.high_level import extract_text
         from pdfminer.layout import LAParams
@@ -46,6 +142,10 @@ def extract_text_from_pdf(pdf_path: str) -> Optional[str]:
         )
 
         if text and text.strip():
+            # ヘッダー/フッターを除去
+            if margin_texts:
+                print("ヘッダー/フッターを除去中...")
+                text = remove_margin_texts(text, margin_texts)
             print("✓ pdfminer.sixでの抽出に成功")
             return text
 
