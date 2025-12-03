@@ -151,25 +151,32 @@ def batch_process_document_with_bounds(
         # 2. Document AIの仕様に基づき、全体のテキストは最初のシャードにしか含まれない
         full_text = document_shards[0].text
 
-        print(f"結果を解析中...（合計{len(document_shards)}個のシャード）")
-
-        # 3. 全てのシャードのページ情報を、完全なテキストを使って処理する
+        # 3. 全シャードから全てのページを収集する
+        all_pages = []
         for document in document_shards:
-            print(f"シャードを処理中 (ページ数: {len(document.pages)})...")
-            for page in document.pages:
-                page_text = ""
-                for block in page.blocks:
-                    block_x_min, block_x_max, block_y_min, block_y_max = get_bounding_box(block.layout.bounding_poly)
-                    if (block_y_min >= y_min and block_y_max <= y_max and
-                        block_x_min >= x_min and block_x_max <= x_max):
-                        # 2で取得した完全なテキスト(full_text)を全てのページの解析に使う
-                        block_text = get_text_from_layout(block.layout, full_text)
-                        page_text += block_text
+            all_pages.extend(document.pages)
+        
+        # 4. ページ番号順に明確にソートする
+        all_pages.sort(key=lambda p: p.page_number)
 
-                if page_text.strip():
-                    extracted_text.append(f"--- Page {page.page_number} (bounds: x=[{x_min:.2f}-{x_max:.2f}], y=[{y_min:.2f}-{y_max:.2f}]) ---\n")
-                    extracted_text.append(page_text.strip())
-                    extracted_text.append("\n")
+        print(f"結果を解析中...（合計{len(all_pages)}ページ）")
+
+        # 5. ソート済みのページリストを処理する
+        for page in all_pages:
+            print(f"ページ {page.page_number} を処理中...")
+            page_text = ""
+            for block in page.blocks:
+                block_x_min, block_x_max, block_y_min, block_y_max = get_bounding_box(block.layout.bounding_poly)
+                if (block_y_min >= y_min and block_y_max <= y_max and
+                    block_x_min >= x_min and block_x_max <= x_max):
+                    # 2で取得した完全なテキスト(full_text)を全てのページの解析に使う
+                    block_text = get_text_from_layout(block.layout, full_text)
+                    page_text += block_text
+
+            if page_text.strip():
+                extracted_text.append(f"--- Page {page.page_number} (bounds: x=[{x_min:.2f}-{x_max:.2f}], y=[{y_min:.2f}-{y_max:.2f}]) ---\n")
+                extracted_text.append(page_text.strip())
+                extracted_text.append("\n")
     
     finally:
         # ---- クリーンアップ ----
