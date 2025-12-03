@@ -137,26 +137,32 @@ def batch_process_document_with_bounds(
 
         # ---- 結果のダウンロードと解析 ----
         print("GCSから処理結果をダウンロード中...")
-        output_blobs = list(bucket.list_blobs(prefix=gcs_output_prefix))
+        output_blobs = sorted(list(bucket.list_blobs(prefix=gcs_output_prefix)), key=lambda b: b.name)
         if not output_blobs:
             raise Exception("処理結果が見つかりませんでした。")
 
-        for output_blob in output_blobs:
-            if ".json" not in output_blob.name:
-                continue
-            
-            json_string = output_blob.download_as_text()
-            document = documentai.Document.from_json(json_string)
-            full_text = document.text
+        json_blobs = [b for b in output_blobs if ".json" in b.name]
+        if not json_blobs:
+            raise Exception("JSON形式の処理結果が見つかりませんでした。")
+        
+        # 1. 全てのシャードをパースしてメモリに読み込む
+        document_shards = [documentai.Document.from_json(blob.download_as_text()) for blob in json_blobs]
 
-            print(f"結果を解析中: {output_blob.name} (ページ数: {len(document.pages)})")
+        # 2. Document AIの仕様に基づき、全体のテキストは最初のシャードにしか含まれない
+        full_text = document_shards[0].text
 
+        print(f"結果を解析中...（合計{len(document_shards)}個のシャード）")
+
+        # 3. 全てのシャードのページ情報を、完全なテキストを使って処理する
+        for document in document_shards:
+            print(f"シャードを処理中 (ページ数: {len(document.pages)})...")
             for page in document.pages:
                 page_text = ""
                 for block in page.blocks:
                     block_x_min, block_x_max, block_y_min, block_y_max = get_bounding_box(block.layout.bounding_poly)
                     if (block_y_min >= y_min and block_y_max <= y_max and
                         block_x_min >= x_min and block_x_max <= x_max):
+                        # 2で取得した完全なテキスト(full_text)を全てのページの解析に使う
                         block_text = get_text_from_layout(block.layout, full_text)
                         page_text += block_text
 
