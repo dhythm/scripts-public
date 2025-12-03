@@ -36,14 +36,21 @@ except ImportError:
     pass  # python-dotenvがなくても動作する
 
 
-def proofread_with_llm(text: str, page_num: int = 0, max_retries: int = 3) -> str:
+def proofread_with_llm(
+    text: str,
+    page_num: int = 0,
+    max_retries: int = 3,
+    max_reduction_ratio: float = 0.05
+) -> str:
     """
     LLMを使用してテキストを校正する
+    過剰な削減が検出された場合はリトライする
 
     Args:
         text: 校正対象のテキスト
         page_num: ページ番号（デバッグ用）
         max_retries: リトライ回数
+        max_reduction_ratio: 許容する最大削減率（デフォルト5%）
 
     Returns:
         校正済みテキスト
@@ -54,6 +61,7 @@ def proofread_with_llm(text: str, page_num: int = 0, max_retries: int = 3) -> st
         return text
 
     client = OpenAI()
+    original_len = len(text)
 
     system_prompt = """あなたは日本語書籍のOCR校正者です。以下のルールに従って校正してください:
 
@@ -76,7 +84,21 @@ def proofread_with_llm(text: str, page_num: int = 0, max_retries: int = 3) -> st
                 temperature=0.1
             )
 
-            return response.choices[0].message.content or text
+            result = response.choices[0].message.content or text
+            result_len = len(result)
+
+            # 過剰な削減をチェック
+            if original_len > 0:
+                reduction_ratio = (original_len - result_len) / original_len
+                if reduction_ratio > max_reduction_ratio:
+                    if attempt < max_retries - 1:
+                        print(f"    ⚠ 過剰削減検出（ページ{page_num}）: {reduction_ratio*100:.1f}%減、リトライ...")
+                        continue
+                    else:
+                        print(f"    ✗ 過剰削減（ページ{page_num}）、元のテキストを使用")
+                        return text
+
+            return result
 
         except Exception as e:
             if attempt < max_retries - 1:
@@ -132,7 +154,8 @@ def extract_pages_text(
 
 def extract_text_with_llm(
     pdf_path: str,
-    batch_size: int = 1
+    batch_size: int = 1,
+    max_reduction_ratio: float = 0.05
 ) -> Optional[str]:
     """
     PDFからテキストを抽出し、LLM校正を適用する
@@ -140,6 +163,7 @@ def extract_text_with_llm(
     Args:
         pdf_path: PDFファイルのパス
         batch_size: 一度に処理するページ数
+        max_reduction_ratio: 許容する最大削減率（デフォルト5%）
 
     Returns:
         校正済みテキスト
@@ -150,15 +174,40 @@ def extract_text_with_llm(
     print(f"✓ {total}ページを抽出")
 
     proofread_pages = []
+    total_before = 0
+    total_after = 0
 
     for i in range(0, total, batch_size):
         batch = pages[i:i+batch_size]
         batch_text = '\n\n'.join(batch)
+        before_len = len(batch_text)
+        total_before += before_len
 
         page_range = f"{i+1}" if batch_size == 1 else f"{i+1}-{min(i+batch_size, total)}"
-        print(f"  校正中... {page_range}/{total}ページ")
-        proofread_text = proofread_with_llm(batch_text, page_num=i+1)
+
+        # 校正実行（過剰削減検出付き）
+        proofread_text = proofread_with_llm(
+            batch_text,
+            page_num=i+1,
+            max_reduction_ratio=max_reduction_ratio
+        )
+        after_len = len(proofread_text)
+        total_after += after_len
+
+        # 削減率を計算して表示
+        if before_len > 0:
+            reduction = (before_len - after_len) / before_len * 100
+            sign = "-" if reduction > 0 else "+"
+            print(f"  校正中... {page_range}/{total}ページ ({before_len:,}→{after_len:,}文字, {sign}{abs(reduction):.1f}%)")
+        else:
+            print(f"  校正中... {page_range}/{total}ページ (空ページ)")
+
         proofread_pages.append(proofread_text)
+
+    # 全体の統計を表示
+    if total_before > 0:
+        total_reduction = (total_before - total_after) / total_before * 100
+        print(f"\n✓ 全体統計: {total_before:,}→{total_after:,}文字 ({total_reduction:+.1f}%)")
 
     return '\n\n'.join(proofread_pages)
 
@@ -496,7 +545,8 @@ def convert_pdf_to_markdown(
     pdf_path: str,
     output_path: Optional[str] = None,
     use_llm: bool = False,
-    batch_size: int = 1
+    batch_size: int = 1,
+    max_reduction_ratio: float = 0.05
 ) -> bool:
     """
     PDFファイルをMarkdownファイルに変換する
@@ -506,6 +556,7 @@ def convert_pdf_to_markdown(
         output_path: 出力ファイルのパス（省略時は自動生成）
         use_llm: LLM校正を使用するか
         batch_size: LLM処理時のバッチサイズ
+        max_reduction_ratio: 許容する最大削減率（デフォルト5%）
 
     Returns:
         成功時True、失敗時False
@@ -530,13 +581,18 @@ def convert_pdf_to_markdown(
     print(f"出力: {output_path}")
     if use_llm:
         print(f"バッチサイズ: {batch_size}ページ")
+        print(f"最大削減率: {max_reduction_ratio*100:.0f}%")
     print(f"{'='*60}\n")
 
     # ステップ1: PDFからテキストを抽出
     if use_llm:
         print("[1/2] PDFからテキストを抽出・LLM校正中...")
         try:
-            extracted_text = extract_text_with_llm(str(pdf_file), batch_size=batch_size)
+            extracted_text = extract_text_with_llm(
+                str(pdf_file),
+                batch_size=batch_size,
+                max_reduction_ratio=max_reduction_ratio
+            )
         except Exception as e:
             print(f"\n✗ エラー: LLM処理に失敗しました: {e}")
             print("OPENAI_API_KEY が設定されていることを確認してください。")
@@ -607,6 +663,12 @@ def main():
         default=1,
         help='LLM処理時のバッチサイズ（デフォルト: 1ページ）'
     )
+    parser.add_argument(
+        '--max-reduction',
+        type=float,
+        default=0.05,
+        help='許容する最大削減率（デフォルト: 0.05 = 5%%）'
+    )
 
     args = parser.parse_args()
 
@@ -615,7 +677,8 @@ def main():
         args.pdf_path,
         args.output,
         use_llm=args.llm,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        max_reduction_ratio=args.max_reduction
     )
 
     sys.exit(0 if success else 1)
