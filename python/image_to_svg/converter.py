@@ -152,6 +152,329 @@ def reduce_colors_kmeans(
     return len(unique_colors), colors_rgb
 
 
+def reduce_colors_by_frequency(
+    input_path: str,
+    output_path: str,
+    target_colors: int = 10,
+    initial_threshold: float = 10.0,
+    threshold_step: float = 5.0,
+    max_iterations: int = 20,
+) -> Tuple[int, list]:
+    """
+    効率的に近似色を最頻色に統合して色数を削減
+
+    アルゴリズム:
+    1. 全色をLAB色空間に変換
+    2. 出現頻度順にソート
+    3. 各色について、閾値以内の近似色を最頻色に統合
+    4. 色数が目標以下になるまで閾値を上げて繰り返し
+
+    Args:
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        target_colors: 目標色数
+        initial_threshold: LAB色空間での初期色差閾値
+        threshold_step: 閾値の増加幅
+        max_iterations: 最大反復回数
+
+    Returns:
+        (実際の色数, 使用された色のRGBリスト)
+    """
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    h, w = img.shape[:2]
+    pixels = img.reshape(-1, 3)
+
+    # 全色とその出現回数・位置を取得
+    unique_colors, inverse, counts = np.unique(
+        pixels, axis=0, return_inverse=True, return_counts=True
+    )
+    print(f"  初期色数: {len(unique_colors)}")
+
+    # BGR → LAB に一括変換
+    unique_colors_lab = cv2.cvtColor(
+        unique_colors.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+    ).reshape(-1, 3).astype(np.float32)
+
+    threshold = initial_threshold
+
+    for iteration in range(max_iterations):
+        n_colors = len(unique_colors)
+        print(f"  Iteration {iteration + 1}: {n_colors}色 (閾値={threshold:.1f})")
+
+        if n_colors <= target_colors:
+            break
+
+        # 出現頻度順にインデックスをソート
+        sorted_indices = np.argsort(-counts)
+
+        # マッピング配列（自分自身にマップ = 変更なし）
+        mapping = np.arange(n_colors)
+        processed = np.zeros(n_colors, dtype=bool)
+
+        for idx in sorted_indices:
+            if processed[idx]:
+                continue
+
+            # この色のLAB値
+            color_lab = unique_colors_lab[idx]
+
+            # 未処理の色との距離を計算
+            unprocessed_mask = ~processed
+            unprocessed_indices = np.where(unprocessed_mask)[0]
+
+            if len(unprocessed_indices) == 0:
+                break
+
+            unprocessed_labs = unique_colors_lab[unprocessed_indices]
+            distances = np.sqrt(np.sum((unprocessed_labs - color_lab) ** 2, axis=1))
+
+            # 閾値以内の色を見つける
+            similar_mask = distances <= threshold
+            similar_indices = unprocessed_indices[similar_mask]
+
+            # 類似色の中で最頻色を見つける
+            similar_counts = counts[similar_indices]
+            most_frequent_idx = similar_indices[np.argmax(similar_counts)]
+
+            # マッピングを設定
+            for sim_idx in similar_indices:
+                mapping[sim_idx] = most_frequent_idx
+                processed[sim_idx] = True
+
+        # マッピングを適用して色を統合
+        new_color_indices = mapping[inverse]
+        new_pixels = unique_colors[new_color_indices]
+
+        # 新しいユニーク色を取得
+        new_unique_colors, new_inverse, new_counts = np.unique(
+            new_pixels, axis=0, return_inverse=True, return_counts=True
+        )
+
+        if len(new_unique_colors) == n_colors:
+            # 変化なし → 閾値を上げる
+            threshold += threshold_step
+            continue
+
+        # 更新
+        unique_colors = new_unique_colors
+        inverse = new_inverse
+        counts = new_counts
+
+        # LABも再計算
+        unique_colors_lab = cv2.cvtColor(
+            unique_colors.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+        ).reshape(-1, 3).astype(np.float32)
+
+        if len(unique_colors) <= target_colors:
+            break
+
+        # 閾値を上げる
+        threshold += threshold_step
+
+    # 最終結果を画像に適用
+    final_pixels = unique_colors[inverse]
+    result_image = final_pixels.reshape(h, w, 3).astype(np.uint8)
+
+    # 色リスト（RGB）
+    colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in unique_colors]
+
+    # BGR → RGB → 保存
+    rgb_image = cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
+
+    print(f"  最終: {len(unique_colors)}色")
+    return len(unique_colors), colors_rgb
+
+
+def sharpen_boundaries_morphology(image: np.ndarray, kernel_size: int = 3) -> np.ndarray:
+    """
+    形態学的処理で境界を明確化（滑らかさを保持）
+
+    各色のマスクに対してクロージング（膨張→収縮）を適用し、
+    小さな穴や境界のギザギザを滑らかにする
+
+    Args:
+        image: BGR画像（色数が少ない前提）
+        kernel_size: モルフォロジーカーネルサイズ
+
+    Returns:
+        境界が明確化された画像
+    """
+    h, w = image.shape[:2]
+    pixels = image.reshape(-1, 3)
+
+    # 使用されている色を取得
+    unique_colors = np.unique(pixels, axis=0)
+    print(f"    処理対象: {len(unique_colors)}色")
+
+    # 各色のマスクを作成し、モルフォロジー処理
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    # 結果画像（優先度マップも作成）
+    result = image.copy()
+    processed_mask = np.zeros((h, w), dtype=bool)
+
+    # 面積の大きい色から処理（背景→前景の順）
+    color_areas = []
+    for color in unique_colors:
+        mask = np.all(image == color, axis=2)
+        area = np.sum(mask)
+        color_areas.append((color, area))
+
+    color_areas.sort(key=lambda x: -x[1])  # 面積降順
+
+    for color, area in color_areas:
+        # この色のマスク
+        mask = np.all(image == color, axis=2).astype(np.uint8) * 255
+
+        # クロージング（膨張→収縮）で小さな穴を埋め、境界を滑らかに
+        closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        # オープニング（収縮→膨張）で小さなノイズを除去
+        opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
+
+        # まだ処理されていない領域にのみ適用
+        new_mask = (opened > 0) & ~processed_mask
+        result[new_mask] = color
+        processed_mask |= new_mask
+
+    return result
+
+
+def reduce_colors_with_sharp_boundaries(
+    input_path: str,
+    output_path: str,
+    target_colors: int = 10,
+    initial_threshold: float = 10.0,
+    threshold_step: float = 5.0,
+    max_iterations: int = 20,
+    boundary_iterations: int = 2,
+) -> Tuple[int, list]:
+    """
+    2段階処理で色数削減と境界明確化を行う
+
+    1. グローバル色統合（出現頻度ベース）
+    2. 境界明確化（隣接ピクセルの最頻色に置換）
+
+    Args:
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        target_colors: 目標色数
+        initial_threshold: 初期色差閾値
+        threshold_step: 閾値増加幅
+        max_iterations: 色統合の最大反復回数
+        boundary_iterations: 境界明確化の反復回数
+
+    Returns:
+        (実際の色数, 使用された色のRGBリスト)
+    """
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    h, w = img.shape[:2]
+    pixels = img.reshape(-1, 3)
+
+    # === Step 1: グローバル色統合 ===
+    print("  Step 1: グローバル色統合...")
+
+    unique_colors, inverse, counts = np.unique(
+        pixels, axis=0, return_inverse=True, return_counts=True
+    )
+    print(f"    初期色数: {len(unique_colors)}")
+
+    unique_colors_lab = cv2.cvtColor(
+        unique_colors.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+    ).reshape(-1, 3).astype(np.float32)
+
+    threshold = initial_threshold
+
+    for iteration in range(max_iterations):
+        n_colors = len(unique_colors)
+        print(f"    Iteration {iteration + 1}: {n_colors}色 (閾値={threshold:.1f})")
+
+        if n_colors <= target_colors:
+            break
+
+        sorted_indices = np.argsort(-counts)
+        mapping = np.arange(n_colors)
+        processed = np.zeros(n_colors, dtype=bool)
+
+        for idx in sorted_indices:
+            if processed[idx]:
+                continue
+
+            color_lab = unique_colors_lab[idx]
+            unprocessed_mask = ~processed
+            unprocessed_indices = np.where(unprocessed_mask)[0]
+
+            if len(unprocessed_indices) == 0:
+                break
+
+            unprocessed_labs = unique_colors_lab[unprocessed_indices]
+            distances = np.sqrt(np.sum((unprocessed_labs - color_lab) ** 2, axis=1))
+
+            similar_mask = distances <= threshold
+            similar_indices = unprocessed_indices[similar_mask]
+
+            similar_counts = counts[similar_indices]
+            most_frequent_idx = similar_indices[np.argmax(similar_counts)]
+
+            for sim_idx in similar_indices:
+                mapping[sim_idx] = most_frequent_idx
+                processed[sim_idx] = True
+
+        new_color_indices = mapping[inverse]
+        new_pixels = unique_colors[new_color_indices]
+
+        new_unique_colors, new_inverse, new_counts = np.unique(
+            new_pixels, axis=0, return_inverse=True, return_counts=True
+        )
+
+        if len(new_unique_colors) == n_colors:
+            threshold += threshold_step
+            continue
+
+        unique_colors = new_unique_colors
+        inverse = new_inverse
+        counts = new_counts
+
+        unique_colors_lab = cv2.cvtColor(
+            unique_colors.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+        ).reshape(-1, 3).astype(np.float32)
+
+        if len(unique_colors) <= target_colors:
+            break
+
+        threshold += threshold_step
+
+    # 中間画像を生成
+    intermediate_pixels = unique_colors[inverse]
+    intermediate_image = intermediate_pixels.reshape(h, w, 3).astype(np.uint8)
+    print(f"    色統合後: {len(unique_colors)}色")
+
+    # === Step 2: 境界明確化（形態学的処理）===
+    print("  Step 2: 境界明確化...")
+    result_image = sharpen_boundaries_morphology(intermediate_image, kernel_size=3)
+
+    # 最終色数を確認
+    final_pixels = result_image.reshape(-1, 3)
+    final_unique_colors = np.unique(final_pixels, axis=0)
+    colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in final_unique_colors]
+
+    # 保存
+    rgb_image = cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
+
+    print(f"  最終: {len(final_unique_colors)}色")
+    return len(final_unique_colors), colors_rgb
+
+
 def posterize_only(input_path: str, output_path: str, levels: int = 8) -> None:
     """
     画像をポスタリゼーションのみ実行（色の階調を減らす）
@@ -436,6 +759,7 @@ def process_step_by_step(
     input_path: str,
     output_dir: str,
     num_colors: int = 10,
+    use_iterative: bool = True,
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -444,6 +768,7 @@ def process_step_by_step(
         input_path: 入力画像パス
         output_dir: 出力ディレクトリ
         num_colors: 目標色数
+        use_iterative: True=反復的色統合、False=K-means
 
     Returns:
         各ステップの情報を含む辞書
@@ -459,17 +784,28 @@ def process_step_by_step(
     results["original_colors"] = original_colors
     print(f"Step 0 - 元画像の色数: {original_colors}")
 
-    # Step 1: K-meansで色数削減
+    # Step 1: 色数削減
     reduced_path = str(output_path / f"{input_name}_1_reduced.png")
-    actual_colors, color_list = reduce_colors_kmeans(
-        input_path,
-        reduced_path,
-        num_colors,
-    )
+
+    if use_iterative:
+        print("Step 1 - 反復的色統合...")
+        actual_colors, color_list = reduce_colors_by_frequency(
+            input_path,
+            reduced_path,
+            target_colors=num_colors,
+        )
+    else:
+        print("Step 1 - K-means...")
+        actual_colors, color_list = reduce_colors_kmeans(
+            input_path,
+            reduced_path,
+            num_colors,
+        )
+
     results["reduced_path"] = reduced_path
     results["reduced_colors"] = actual_colors
     results["color_list"] = color_list
-    print(f"Step 1 - K-means後: {actual_colors}色")
+    print(f"Step 1 完了: {actual_colors}色")
     print(f"使用色: {color_list}")
 
     # Step 2: SVG生成
