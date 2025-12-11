@@ -11,6 +11,38 @@ import svgwrite
 from PIL import Image
 
 
+def upscale_image(image: np.ndarray, scale: int = 2) -> np.ndarray:
+    """
+    画像を拡大（最近傍補間で色を保持）
+
+    Args:
+        image: BGR画像
+        scale: 拡大倍率
+
+    Returns:
+        拡大された画像
+    """
+    h, w = image.shape[:2]
+    new_h, new_w = h * scale, w * scale
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+
+def downscale_image(image: np.ndarray, scale: int = 2) -> np.ndarray:
+    """
+    画像を縮小（最近傍補間で色を保持）
+
+    Args:
+        image: BGR画像
+        scale: 縮小倍率
+
+    Returns:
+        縮小された画像
+    """
+    h, w = image.shape[:2]
+    new_h, new_w = h // scale, w // scale
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+
 def denoise_image(input_path: str, output_path: str) -> None:
     """
     JPEG/PNG画像のノイズを除去してPNGとして保存
@@ -376,6 +408,147 @@ def sharpen_boundaries_morphology(image: np.ndarray, kernel_size: int = 3) -> np
     return result
 
 
+def reduce_colors_region_based(
+    image: np.ndarray,
+    target_colors: int = 15,
+    min_region_area: int = 50,
+) -> Tuple[np.ndarray, int, list]:
+    """
+    領域ベースの色統合で色数を削減
+
+    アルゴリズム:
+    1. 各色の連結成分（領域）を検出
+    2. 小さい領域を隣接する最大領域の色に吸収
+    3. 残った領域をLAB色空間でクラスタリング
+    4. 各クラスタの代表色は元画像の最頻色から選択
+
+    Args:
+        image: BGR画像（既に色数が削減されている前提）
+        target_colors: 目標色数
+        min_region_area: 最小領域面積（これ以下は吸収）
+
+    Returns:
+        (処理後の画像, 実際の色数, 使用された色のRGBリスト)
+    """
+    h, w = image.shape[:2]
+    pixels = image.reshape(-1, 3)
+
+    # 使用されている色を取得
+    unique_colors = np.unique(pixels, axis=0)
+    print(f"    入力色数: {len(unique_colors)}")
+
+    # === Step 1: 各色の連結成分を検出し、小さい領域を吸収 ===
+    print("    Step 1: 小領域の吸収...")
+
+    # 結果画像を初期化
+    result = image.copy()
+
+    # 各色について処理
+    for color in unique_colors:
+        # この色のマスク
+        color_mask = np.all(image == color, axis=2).astype(np.uint8)
+
+        # 連結成分ラベリング
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            color_mask, connectivity=8
+        )
+
+        # 各領域について処理（ラベル0は背景なのでスキップ）
+        for label_id in range(1, num_labels):
+            area = stats[label_id, cv2.CC_STAT_AREA]
+
+            if area < min_region_area:
+                # 小さい領域 → 隣接する最大領域の色に置換
+                region_mask = labels == label_id
+
+                # この領域の境界ピクセルを見つける
+                kernel = np.ones((3, 3), dtype=np.uint8)
+                dilated = cv2.dilate(region_mask.astype(np.uint8), kernel)
+                boundary = dilated.astype(bool) & ~region_mask
+
+                # 境界の色をカウント
+                if np.any(boundary):
+                    boundary_colors = image[boundary]
+                    unique_boundary, counts = np.unique(
+                        boundary_colors, axis=0, return_counts=True
+                    )
+                    # 最頻色で置換
+                    dominant_color = unique_boundary[np.argmax(counts)]
+                    result[region_mask] = dominant_color
+
+    # === Step 2: 残った色をクラスタリング ===
+    print("    Step 2: 色のクラスタリング...")
+
+    result_pixels = result.reshape(-1, 3)
+    unique_colors_after = np.unique(result_pixels, axis=0)
+    print(f"    吸収後の色数: {len(unique_colors_after)}")
+
+    if len(unique_colors_after) <= target_colors:
+        # 既に目標以下なら終了
+        colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in unique_colors_after]
+        return result, len(unique_colors_after), colors_rgb
+
+    # LAB色空間でK-meansクラスタリング
+    unique_colors_lab = cv2.cvtColor(
+        unique_colors_after.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+    ).reshape(-1, 3).astype(np.float32)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+    _, labels_km, _ = cv2.kmeans(
+        unique_colors_lab,
+        target_colors,
+        None,
+        criteria,
+        10,
+        cv2.KMEANS_PP_CENTERS,
+    )
+    labels_km = labels_km.flatten()
+
+    # 各クラスタの代表色を決定（そのクラスタ内で最も面積が大きい色）
+    representative_colors = np.zeros((target_colors, 3), dtype=np.uint8)
+    for cluster_id in range(target_colors):
+        cluster_mask = labels_km == cluster_id
+        if not np.any(cluster_mask):
+            continue
+
+        cluster_colors = unique_colors_after[cluster_mask]
+
+        # 各色の面積を計算
+        max_area = 0
+        best_color = cluster_colors[0]
+        for color in cluster_colors:
+            area = np.sum(np.all(result == color, axis=2))
+            if area > max_area:
+                max_area = area
+                best_color = color
+
+        representative_colors[cluster_id] = best_color
+
+    # 色のマッピングを作成
+    color_to_cluster = {}
+    for i, color in enumerate(unique_colors_after):
+        cluster_id = labels_km[i]
+        color_to_cluster[tuple(color)] = representative_colors[cluster_id]
+
+    # 画像を更新
+    final_result = np.zeros_like(result)
+    for y in range(h):
+        for x in range(w):
+            old_color = tuple(result[y, x])
+            if old_color in color_to_cluster:
+                final_result[y, x] = color_to_cluster[old_color]
+            else:
+                final_result[y, x] = result[y, x]
+
+    # 最終色数
+    final_pixels = final_result.reshape(-1, 3)
+    final_unique = np.unique(final_pixels, axis=0)
+    colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in final_unique]
+
+    print(f"    最終色数: {len(final_unique)}")
+    return final_result, len(final_unique), colors_rgb
+
+
 def reduce_colors_with_sharp_boundaries(
     input_path: str,
     output_path: str,
@@ -712,6 +885,7 @@ def create_svg_from_quantized(
     quantized_image: np.ndarray,
     output_path: str,
     min_area: int = 5,
+    original_size: Tuple[int, int] | None = None,
 ) -> int:
     """
     量子化済み画像からSVGを生成
@@ -721,6 +895,7 @@ def create_svg_from_quantized(
         quantized_image: 量子化済みBGR画像
         output_path: 出力SVGパス
         min_area: 最小面積
+        original_size: 元のサイズ (width, height)、指定時はviewBoxを使用
 
     Returns:
         生成されたパス数
@@ -763,8 +938,16 @@ def create_svg_from_quantized(
     # 面積の大きい順にソート（大きいものを先に描画）
     all_paths.sort(key=lambda x: x[0], reverse=True)
 
-    # SVG作成
-    dwg = svgwrite.Drawing(output_path, size=(w, h))
+    # SVG作成（original_sizeが指定されていればviewBoxを使用）
+    if original_size:
+        display_w, display_h = original_size
+        dwg = svgwrite.Drawing(
+            output_path,
+            size=(display_w, display_h),
+            viewBox=f"0 0 {w} {h}",
+        )
+    else:
+        dwg = svgwrite.Drawing(output_path, size=(w, h))
 
     # 背景を追加
     dwg.add(dwg.rect(
@@ -792,6 +975,9 @@ def process_step_by_step(
     num_colors: int = 256,
     use_iterative: bool = True,
     save_intermediate: bool = False,
+    final_colors: int = 15,
+    min_region_area: int = 50,
+    upscale_factor: int = 2,
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -799,9 +985,12 @@ def process_step_by_step(
     Args:
         input_path: 入力画像パス
         output_dir: 出力ディレクトリ
-        num_colors: 目標色数
+        num_colors: 第1段階の目標色数（デフォルト256）
         use_iterative: True=反復的色統合、False=K-means
         save_intermediate: True=各イテレーションの中間結果をPNGで保存
+        final_colors: 第2段階（領域ベース統合）の最終目標色数
+        min_region_area: 最小領域面積（これ以下は隣接領域に吸収）
+        upscale_factor: 拡大倍率（1=拡大なし、2=2倍、4=4倍）
 
     Returns:
         各ステップの情報を含む辞書
@@ -816,44 +1005,137 @@ def process_step_by_step(
     intermediate_dir = None
     if save_intermediate:
         intermediate_dir = str(output_path / f"{input_name}_intermediate")
+        Path(intermediate_dir).mkdir(parents=True, exist_ok=True)
 
-    # Step 0: 元画像の色数
+    # Step 0: 元画像の読み込みと情報取得
+    original_img = cv2.imread(input_path)
+    if original_img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    original_h, original_w = original_img.shape[:2]
     original_colors = count_unique_colors(input_path)
     results["original_colors"] = original_colors
-    print(f"Step 0 - 元画像の色数: {original_colors}")
+    results["original_size"] = (original_w, original_h)
+    print(f"Step 0 - 元画像: {original_w}x{original_h}, {original_colors}色")
 
-    # Step 1: 色数削減
-    reduced_path = str(output_path / f"{input_name}_1_reduced.png")
+    # Step 1: 画像を拡大（最近傍補間で色を保持）
+    if upscale_factor > 1:
+        print(f"Step 1 - 画像を{upscale_factor}倍に拡大...")
+        upscaled_img = upscale_image(original_img, upscale_factor)
+        upscaled_h, upscaled_w = upscaled_img.shape[:2]
+        print(f"  拡大後サイズ: {upscaled_w}x{upscaled_h}")
 
-    if use_iterative:
-        print("Step 1 - 反復的色統合...")
-        actual_colors, color_list = reduce_colors_by_frequency(
-            input_path,
-            reduced_path,
-            target_colors=num_colors,
-            intermediate_dir=intermediate_dir,
-        )
+        # 拡大画像を一時保存
+        upscaled_path = str(output_path / f"{input_name}_1_upscaled.png")
+        upscaled_rgb = cv2.cvtColor(upscaled_img, cv2.COLOR_BGR2RGB)
+        Image.fromarray(upscaled_rgb).save(upscaled_path, "PNG")
+        results["upscaled_path"] = upscaled_path
+
+        # 小領域の閾値も拡大に合わせて調整
+        adjusted_min_region_area = min_region_area * (upscale_factor ** 2)
     else:
-        print("Step 1 - K-means...")
-        actual_colors, color_list = reduce_colors_kmeans(
-            input_path,
-            reduced_path,
-            num_colors,
+        upscaled_img = original_img
+        adjusted_min_region_area = min_region_area
+
+    # Step 2: 色数削減（拡大画像に対して）
+    print(f"Step 2 - 色数削減（目標: {final_colors}色）...")
+
+    # K-meansで直接目標色数に削減（元画像の色を保持）
+    h, w = upscaled_img.shape[:2]
+    pixels = upscaled_img.reshape(-1, 3)
+
+    # LAB色空間でK-means
+    lab_img = cv2.cvtColor(upscaled_img, cv2.COLOR_BGR2LAB)
+    pixels_lab = lab_img.reshape(-1, 3).astype(np.float32)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+    _, labels, _ = cv2.kmeans(
+        pixels_lab,
+        final_colors,
+        None,
+        criteria,
+        10,
+        cv2.KMEANS_PP_CENTERS,
+    )
+    labels_flat = labels.flatten()
+
+    # 各クラスタの代表色を元画像の最頻色から選択
+    representative_colors = np.zeros((final_colors, 3), dtype=np.uint8)
+    for cluster_id in range(final_colors):
+        mask = labels_flat == cluster_id
+        if not np.any(mask):
+            continue
+        cluster_pixels = pixels[mask]
+        unique, counts = np.unique(cluster_pixels, axis=0, return_counts=True)
+        representative_colors[cluster_id] = unique[np.argmax(counts)]
+
+    # 量子化画像を生成
+    quantized_pixels = representative_colors[labels_flat]
+    quantized_img = quantized_pixels.reshape(h, w, 3).astype(np.uint8)
+
+    # 量子化結果を保存
+    quantized_path = str(output_path / f"{input_name}_2_quantized.png")
+    quantized_rgb = cv2.cvtColor(quantized_img, cv2.COLOR_BGR2RGB)
+    Image.fromarray(quantized_rgb).save(quantized_path, "PNG")
+    results["quantized_path"] = quantized_path
+
+    unique_colors = np.unique(quantized_pixels, axis=0)
+    print(f"  量子化後の色数: {len(unique_colors)}")
+
+    # Step 3: 小領域の吸収
+    print(f"Step 3 - 小領域の吸収（閾値: {adjusted_min_region_area}px）...")
+    cleaned_img = quantized_img.copy()
+
+    for color in unique_colors:
+        color_mask = np.all(quantized_img == color, axis=2).astype(np.uint8)
+        num_labels, labels_cc, stats, _ = cv2.connectedComponentsWithStats(
+            color_mask, connectivity=8
         )
 
-    results["reduced_path"] = reduced_path
-    results["reduced_colors"] = actual_colors
-    results["color_list"] = color_list
-    print(f"Step 1 完了: {actual_colors}色")
-    print(f"使用色: {color_list}")
+        for label_id in range(1, num_labels):
+            area = stats[label_id, cv2.CC_STAT_AREA]
+            if area < adjusted_min_region_area:
+                region_mask = labels_cc == label_id
+                kernel = np.ones((3, 3), dtype=np.uint8)
+                dilated = cv2.dilate(region_mask.astype(np.uint8), kernel)
+                boundary = dilated.astype(bool) & ~region_mask
 
-    # Step 2: SVG生成
-    svg_path = str(output_path / f"{input_name}_2_output.svg")
-    quantized_img = cv2.imread(reduced_path)
-    path_count = create_svg_from_quantized(quantized_img, svg_path)
+                if np.any(boundary):
+                    boundary_colors = quantized_img[boundary]
+                    unique_boundary, counts = np.unique(
+                        boundary_colors, axis=0, return_counts=True
+                    )
+                    dominant_color = unique_boundary[np.argmax(counts)]
+                    cleaned_img[region_mask] = dominant_color
+
+    # クリーニング結果を保存
+    cleaned_path = str(output_path / f"{input_name}_3_cleaned.png")
+    cleaned_rgb = cv2.cvtColor(cleaned_img, cv2.COLOR_BGR2RGB)
+    Image.fromarray(cleaned_rgb).save(cleaned_path, "PNG")
+    results["cleaned_path"] = cleaned_path
+
+    final_pixels = cleaned_img.reshape(-1, 3)
+    final_unique = np.unique(final_pixels, axis=0)
+    colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in final_unique]
+    print(f"  クリーニング後の色数: {len(final_unique)}")
+    print(f"  使用色: {colors_rgb}")
+
+    results["final_colors"] = len(final_unique)
+    results["color_list"] = colors_rgb
+
+    # Step 4: SVG生成（高解像度画像から、viewBoxで元サイズに）
+    print("Step 4 - SVG生成...")
+    svg_path = str(output_path / f"{input_name}_4_output.svg")
+
+    # SVGを生成（高解像度のまま、viewBoxで元サイズ表示）
+    path_count = create_svg_from_quantized(
+        cleaned_img,
+        svg_path,
+        original_size=(original_w, original_h) if upscale_factor > 1 else None,
+    )
     results["svg_path"] = svg_path
     results["path_count"] = path_count
-    print(f"Step 2 - SVG生成: {path_count}パス")
+    print(f"  SVG生成: {path_count}パス")
 
     return results
 

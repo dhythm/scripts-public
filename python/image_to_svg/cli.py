@@ -10,22 +10,47 @@ from .converter import process_step_by_step
 def main() -> None:
     """CLIエントリーポイント"""
     if len(sys.argv) < 2:
-        print("使い方: python -m image_to_svg <入力画像> [出力ディレクトリ] [色数] [--intermediate]")
+        print("使い方: python -m image_to_svg <入力画像> [出力ディレクトリ] [最終色数] [オプション]")
         print()
         print("例:")
         print("  python -m image_to_svg input.png ./output")
-        print("  python -m image_to_svg input.png ./output 10")
-        print("  python -m image_to_svg input.png ./output 10 --intermediate")
+        print("  python -m image_to_svg input.png ./output 15")
+        print("  python -m image_to_svg input.png ./output 15 --scale 4")
+        print("  python -m image_to_svg input.png ./output 15 --intermediate")
         print()
         print("オプション:")
-        print("  --intermediate  各イテレーションの中間結果をPNGで保存")
+        print("  --scale N       拡大倍率（デフォルト: 4、大きいほど境界が滑らか）")
+        print("  --intermediate  各ステップの中間結果をPNGで保存")
+        print()
+        print("処理フロー:")
+        print("  1. 画像を拡大（最近傍補間で色を保持）")
+        print("  2. K-meansで色数削減（元画像の色を保持）")
+        print("  3. 小領域の吸収")
+        print("  4. SVG生成（viewBoxで元サイズに表示）")
         sys.exit(1)
 
-    # --intermediate フラグの確認
+    # オプションの解析
     save_intermediate = "--intermediate" in sys.argv
-    args = [arg for arg in sys.argv[1:] if arg != "--intermediate"]
 
-    input_path = args[0]
+    # --scale オプションの解析
+    upscale_factor = 4  # デフォルト
+    args_filtered = []
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] == "--scale" and i + 1 < len(sys.argv):
+            upscale_factor = int(sys.argv[i + 1])
+            i += 2
+        elif sys.argv[i] == "--intermediate":
+            i += 1
+        else:
+            args_filtered.append(sys.argv[i])
+            i += 1
+
+    if not args_filtered:
+        print("エラー: 入力画像を指定してください")
+        sys.exit(1)
+
+    input_path = args_filtered[0]
 
     # 入力ファイルの存在確認
     if not Path(input_path).exists():
@@ -33,23 +58,27 @@ def main() -> None:
         sys.exit(1)
 
     # 出力ディレクトリの決定
-    if len(args) >= 2:
-        output_dir = args[1]
-    else:
-        output_dir = "./output"
+    output_dir = args_filtered[1] if len(args_filtered) >= 2 else "./output"
 
-    # 色数の決定
-    num_colors = int(args[2]) if len(args) >= 3 else 256
+    # 最終色数の決定
+    final_colors = int(args_filtered[2]) if len(args_filtered) >= 3 else 15
 
     print(f"変換中: {input_path} → {output_dir}")
+    print(f"目標色数: {final_colors}")
+    print(f"拡大倍率: {upscale_factor}倍")
     if save_intermediate:
         print("中間結果を保存します")
 
     try:
         results = process_step_by_step(
-            input_path, output_dir, num_colors, save_intermediate=save_intermediate
+            input_path,
+            output_dir,
+            save_intermediate=save_intermediate,
+            final_colors=final_colors,
+            upscale_factor=upscale_factor,
         )
         print(f"完了: {results['svg_path']}")
+        print(f"最終色数: {results['final_colors']}")
         if save_intermediate:
             print(f"中間結果: {output_dir}/{Path(input_path).stem}_intermediate/")
     except Exception as e:
