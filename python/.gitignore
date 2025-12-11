@@ -1,4 +1,6 @@
 __pycache__/
 python.egg-info/
 
+
 reports/output/
+output/

@@ -1,83 +1,136 @@
-"""画像からSVGへの変換処理"""
+"""画像からSVGへの変換処理 - Step by Step実装"""
 from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import List, Tuple, TypedDict
+from typing import List, Tuple
 
 import cv2
 import numpy as np
 import svgwrite
+from PIL import Image
 
 
-# 調整可能なパラメータ
-NUM_COLORS = 6  # K-meansのクラスタ数（人の目で見える色数に近く）
-EPSILON_FACTOR = 0.001  # 輪郭近似の精度（周長に対する比率）
-MIN_AREA_RATIO = 0.00005  # 画像面積の0.005%
-MIN_AREA_ABSOLUTE = 20  # 最小面積絶対値（px）
-KERNEL_SIZE = 1  # モルフォロジーカーネルサイズ（最小 - 小さな領域を保持）
-KMEANS_ATTEMPTS = 10  # K-means試行回数
-UPSCALE_FACTOR = 2  # 画像拡大倍率（輪郭抽出の精度向上用）
-
-# デノイズパラメータ
-DENOISE_H = 10  # Non-local means denoising strength
-DENOISE_TEMPLATE_WINDOW = 7  # テンプレートウィンドウサイズ
-DENOISE_SEARCH_WINDOW = 21  # 検索ウィンドウサイズ
-MEDIAN_BLUR_SIZE = 3  # メディアンフィルタサイズ（奇数）
-COLOR_QUANTIZE_LEVELS = 8  # 色の量子化レベル（256/8=32段階に量子化）
-
-
-class ContourPath(TypedDict):
-    """輪郭パスを表す型"""
-    points: np.ndarray
-    color_rgb: Tuple[int, int, int]
-    is_hole: bool
-
-
-def quantize_colors(
-    image: np.ndarray,
-    num_colors: int = NUM_COLORS,
-) -> Tuple[np.ndarray, List[Tuple[int, int, int]]]:
+def denoise_image(input_path: str, output_path: str) -> None:
     """
-    画像の色をK-meansで量子化する（LAB色空間を使用）
+    JPEG/PNG画像のノイズを除去してPNGとして保存
 
     Args:
-        image: BGR画像（OpenCV形式）
-        num_colors: 量子化後の最大色数
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+    """
+    # 画像読み込み
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    # 非局所平均法でノイズ除去（カラー）
+    denoised = cv2.fastNlMeansDenoisingColored(
+        img,
+        None,
+        10,  # h
+        10,  # hColor
+        7,   # templateWindowSize
+        21,  # searchWindowSize
+    )
+
+    # OpenCV BGR → RGB
+    denoised_rgb = cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB)
+
+    # Pillow Imageとして保存
+    pil_img = Image.fromarray(denoised_rgb)
+    pil_img.save(output_path, "PNG")
+
+
+def remove_antialiasing(input_path: str, output_path: str, threshold: int = 30) -> None:
+    """
+    アンチエイリアシングを除去（中間色を最も近い主要色に置換）
+
+    Args:
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        threshold: 色差の閾値（これ以下の差は同じ色とみなす）
+    """
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    # Step 1: メディアンフィルタで軽くぼかす（塩胡椒ノイズ除去）
+    blurred = cv2.medianBlur(img, 3)
+
+    # Step 2: バイラテラルフィルタ（エッジ保持しながら平滑化）
+    # d: ピクセル近傍の直径
+    # sigmaColor: 色空間でのフィルタシグマ
+    # sigmaSpace: 座標空間でのフィルタシグマ
+    bilateral = cv2.bilateralFilter(blurred, 9, 75, 75)
+
+    # Step 3: 色の量子化（各チャンネルを32段階に）
+    quantize_level = 8  # 256/8 = 32段階
+    quantized = (bilateral // quantize_level) * quantize_level + quantize_level // 2
+
+    # BGR → RGB → 保存
+    rgb_image = cv2.cvtColor(quantized, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
+
+
+def count_unique_colors(image_path: str) -> int:
+    """
+    画像内の固有色数をカウント
+
+    Args:
+        image_path: 画像パス
 
     Returns:
-        量子化された画像（BGR）, 色のリスト（RGB形式）
+        固有色の数
     """
-    # まず画像内の固有色を取得
-    pixels_bgr = image.reshape(-1, 3)
-    unique_bgr = np.unique(pixels_bgr, axis=0)
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {image_path}")
 
-    # 固有色が指定数以下ならそのまま使用
-    if len(unique_bgr) <= num_colors:
-        # 各ピクセルを最も近い固有色に割り当て（既に固有なのでそのまま）
-        colors_rgb: List[Tuple[int, int, int]] = []
-        for bgr in unique_bgr:
-            colors_rgb.append((int(bgr[2]), int(bgr[1]), int(bgr[0])))
-        return image.copy(), colors_rgb
+    pixels = img.reshape(-1, 3)
+    unique_colors = np.unique(pixels, axis=0)
+    return len(unique_colors)
+
+
+def reduce_colors_kmeans(
+    input_path: str,
+    output_path: str,
+    num_colors: int = 8,
+) -> Tuple[int, list]:
+    """
+    K-meansで色数を削減してPNGとして保存
+
+    Args:
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        num_colors: 目標色数
+
+    Returns:
+        (実際の色数, 使用された色のRGBリスト)
+    """
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
 
     # LAB色空間に変換（知覚的に均一）
-    lab_image = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    lab_image = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
 
     # ピクセルデータを2D配列に変形
     pixels = lab_image.reshape(-1, 3).astype(np.float32)
 
-    # K-means クラスタリング
+    # K-meansクラスタリング
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
     _, labels, centers = cv2.kmeans(
         pixels,
         num_colors,
         None,
         criteria,
-        KMEANS_ATTEMPTS,
+        10,  # attempts
         cv2.KMEANS_PP_CENTERS,
     )
 
-    # LAB→BGRに戻す
+    # LAB → BGR
     centers_lab = centers.reshape(1, -1, 3).astype(np.uint8)
     centers_bgr = cv2.cvtColor(centers_lab, cv2.COLOR_LAB2BGR)
     centers_bgr = centers_bgr.reshape(-1, 3)
@@ -85,385 +138,361 @@ def quantize_colors(
     # 量子化された画像を生成
     labels_flat = labels.flatten()
     quantized_pixels = centers_bgr[labels_flat]
-    quantized_image = quantized_pixels.reshape(image.shape).astype(np.uint8)
+    quantized_image = quantized_pixels.reshape(img.shape).astype(np.uint8)
 
-    # 実際に使用された色のみを取得（重複を除く）
-    unique_quantized = np.unique(quantized_pixels, axis=0)
+    # 実際の色数と色リスト
+    unique_colors = np.unique(quantized_pixels, axis=0)
+    colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in unique_colors]
 
-    # BGR→RGBに変換した色リスト
-    colors_rgb = []
-    for bgr in unique_quantized:
-        colors_rgb.append((int(bgr[2]), int(bgr[1]), int(bgr[0])))
+    # BGR → RGB → 保存
+    rgb_image = cv2.cvtColor(quantized_image, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
 
-    return quantized_image, colors_rgb
+    return len(unique_colors), colors_rgb
 
 
-def create_color_masks(
-    quantized_image: np.ndarray,
-    colors: List[Tuple[int, int, int]],
-) -> List[np.ndarray]:
+def posterize_only(input_path: str, output_path: str, levels: int = 8) -> None:
     """
-    各色のマスク画像を生成
+    画像をポスタリゼーションのみ実行（色の階調を減らす）
 
     Args:
-        quantized_image: 量子化された画像（BGR）
-        colors: 色のリスト（RGB形式）
-
-    Returns:
-        マスク画像のリスト
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        levels: 量子化レベル（256/levelsの段階に）
     """
-    masks: List[np.ndarray] = []
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
 
-    for color_rgb in colors:
-        # RGB→BGR変換
-        color_bgr = np.array([color_rgb[2], color_rgb[1], color_rgb[0]], dtype=np.uint8)
+    # 各チャンネルを量子化
+    divisor = 256 // levels
+    posterized = (img // divisor) * divisor + divisor // 2
 
-        # この色と一致するピクセルのマスクを作成
-        mask = cv2.inRange(quantized_image, color_bgr, color_bgr)
-        masks.append(mask)
+    # BGR → RGB → 保存
+    rgb_image = cv2.cvtColor(posterized.astype(np.uint8), cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
 
-    return masks
 
-
-def extract_contours(
-    mask: np.ndarray,
-    epsilon_factor: float = EPSILON_FACTOR,
-    min_area: int = MIN_AREA_ABSOLUTE,
-) -> List[dict]:
+def apply_mode_filter(input_path: str, output_path: str, kernel_size: int = 3) -> None:
     """
-    マスク画像から輪郭を抽出
+    モードフィルタを適用（各ピクセルを近傍の最頻色に置換）
+    アンチエイリアシングの中間色を周囲の主要色に吸収させる
 
     Args:
-        mask: 二値マスク画像
-        epsilon_factor: 輪郭近似の精度
-        min_area: 最小面積閾値
+        input_path: 入力画像パス
+        output_path: 出力PNGパス
+        kernel_size: カーネルサイズ（奇数）
+    """
+    from scipy import ndimage
+    from collections import Counter
+
+    img = cv2.imread(input_path)
+    if img is None:
+        raise ValueError(f"画像を読み込めません: {input_path}")
+
+    h, w = img.shape[:2]
+    pad = kernel_size // 2
+
+    # パディング
+    padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+
+    result = np.zeros_like(img)
+
+    # 各ピクセルについて近傍の最頻色を取得
+    for y in range(h):
+        for x in range(w):
+            # 近傍領域を取得
+            region = padded[y:y + kernel_size, x:x + kernel_size]
+            # ピクセルをタプルに変換してカウント
+            pixels = [tuple(p) for p in region.reshape(-1, 3)]
+            # 最頻色を取得
+            most_common = Counter(pixels).most_common(1)[0][0]
+            result[y, x] = most_common
+
+    # BGR → RGB → 保存
+    rgb_image = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb_image)
+    pil_img.save(output_path, "PNG")
+
+
+def extract_contours_with_holes(
+    image: np.ndarray,
+    color_bgr: Tuple[int, int, int],
+    min_area: int = 5,
+) -> List[Tuple[np.ndarray, List[np.ndarray]]]:
+    """
+    特定の色の輪郭を穴も含めて抽出
+
+    Args:
+        image: BGR画像
+        color_bgr: 対象の色（BGR）
+        min_area: 最小面積
 
     Returns:
-        輪郭パスのリスト（各要素は points, is_hole キーを持つdict）
+        [(外側輪郭, [穴の輪郭リスト]), ...] のリスト
     """
+    # この色のマスクを作成
+    color_array = np.array(color_bgr, dtype=np.uint8)
+    mask = cv2.inRange(image, color_array, color_array)
+
     # 輪郭検出（階層構造も取得）
     contours, hierarchy = cv2.findContours(
         mask,
-        cv2.RETR_TREE,  # 階層構造を保持（穴も検出）
+        cv2.RETR_CCOMP,  # 2レベル階層（外側と穴）
         cv2.CHAIN_APPROX_SIMPLE,
     )
 
-    if hierarchy is None:
+    if hierarchy is None or len(contours) == 0:
         return []
 
-    result: List[dict] = []
-    hierarchy = hierarchy[0]  # shape: (n, 4)
+    hierarchy = hierarchy[0]  # shape: (n, 4) - [next, prev, child, parent]
 
+    result = []
+
+    # 外側の輪郭（parent == -1）を探す
     for i, contour in enumerate(contours):
-        area = cv2.contourArea(contour)
+        parent = hierarchy[i][3]
 
-        # 最小面積でフィルタリング
-        if area < min_area:
-            continue
+        # 親がいない = 外側の輪郭
+        if parent == -1:
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
 
-        # 輪郭を近似
+            # この輪郭の子（穴）を収集
+            holes = []
+            child_idx = hierarchy[i][2]  # 最初の子
+            while child_idx != -1:
+                hole_contour = contours[child_idx]
+                hole_area = cv2.contourArea(hole_contour)
+                if hole_area >= min_area:
+                    holes.append(hole_contour)
+                child_idx = hierarchy[child_idx][0]  # 次の兄弟
+
+            result.append((contour, holes))
+
+    return result
+
+
+def contour_to_svg_path_with_holes(
+    outer: np.ndarray,
+    holes: List[np.ndarray],
+    epsilon_factor: float = 0.0005,
+) -> str:
+    """
+    外側輪郭と穴をSVGパス文字列に変換（fill-rule: evenodd用）
+
+    Args:
+        outer: 外側の輪郭
+        holes: 穴の輪郭リスト
+        epsilon_factor: 輪郭近似の精度
+
+    Returns:
+        SVGパス文字列
+    """
+    def contour_to_path_d(contour: np.ndarray) -> str:
+        if len(contour) == 0:
+            return ""
+
         perimeter = cv2.arcLength(contour, True)
         epsilon = epsilon_factor * perimeter
         approx = cv2.approxPolyDP(contour, epsilon, True)
 
-        # 親がいる場合は穴
-        parent_idx = hierarchy[i][3]
-        is_hole = parent_idx >= 0
+        points = approx.reshape(-1, 2)
+        if len(points) < 3:
+            return ""
 
-        result.append({
-            "points": approx,
-            "is_hole": is_hole,
-        })
+        parts = [f"M {points[0][0]} {points[0][1]}"]
+        for point in points[1:]:
+            parts.append(f"L {point[0]} {point[1]}")
+        parts.append("Z")
 
-    return result
+        return " ".join(parts)
 
-
-def apply_noise_reduction(
-    mask: np.ndarray,
-    kernel_size: int = KERNEL_SIZE,
-) -> np.ndarray:
-    """
-    モルフォロジー演算でノイズ除去
-
-    Args:
-        mask: 二値マスク画像
-        kernel_size: カーネルサイズ
-
-    Returns:
-        ノイズ除去後のマスク
-    """
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-
-    # オープニング（小さな白いノイズを除去）
-    result = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    # クロージング（小さな穴を埋める）
-    result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, kernel)
-
-    return result
-
-
-def contour_to_svg_path(contour: np.ndarray) -> str:
-    """
-    OpenCV輪郭をSVGパス文字列に変換
-
-    Args:
-        contour: OpenCV輪郭
-
-    Returns:
-        SVGパス文字列（例: "M 10 10 L 20 10 L 20 20 Z"）
-    """
-    if len(contour) == 0:
+    # 外側の輪郭
+    path_d = contour_to_path_d(outer)
+    if not path_d:
         return ""
 
-    # 最初の点
-    points = contour.reshape(-1, 2)
-    path_parts = [f"M {points[0][0]} {points[0][1]}"]
+    # 穴を追加
+    for hole in holes:
+        hole_path = contour_to_path_d(hole)
+        if hole_path:
+            path_d += " " + hole_path
 
-    # 残りの点
-    for point in points[1:]:
-        path_parts.append(f"L {point[0]} {point[1]}")
-
-    # パスを閉じる
-    path_parts.append("Z")
-
-    return " ".join(path_parts)
-
-
-def create_svg(
-    contour_paths: List[dict],
-    width: int,
-    height: int,
-    background_color: Tuple[int, int, int] | None = None,
-) -> str:
-    """
-    輪郭パスからSVGを生成
-
-    Args:
-        contour_paths: 輪郭パスのリスト
-        width: 画像幅
-        height: 画像高さ
-        background_color: 背景色（RGB）
-
-    Returns:
-        SVG文字列
-    """
-    dwg = svgwrite.Drawing(size=(width, height))
-
-    # 背景を追加
-    if background_color:
-        r, g, b = background_color
-        dwg.add(dwg.rect(
-            insert=(0, 0),
-            size=(width, height),
-            fill=f"rgb({r},{g},{b})",
-        ))
-
-    # 輪郭パスを追加
-    for contour_path in contour_paths:
-        points = contour_path["points"]
-        color_rgb = contour_path.get("color_rgb", (0, 0, 0))
-        is_hole = contour_path.get("is_hole", False)
-
-        path_d = contour_to_svg_path(points)
-        if not path_d:
-            continue
-
-        r, g, b = color_rgb
-
-        # 穴の場合は fill-rule で処理
-        if is_hole:
-            fill = "none"
-        else:
-            fill = f"rgb({r},{g},{b})"
-
-        dwg.add(dwg.path(d=path_d, fill=fill, stroke="none"))
-
-    return dwg.tostring()
-
-
-def _is_similar_color(
-    color1: Tuple[int, int, int],
-    color2: Tuple[int, int, int],
-    threshold: int = 10,
-) -> bool:
-    """
-    2つの色が類似しているか判定
-
-    Args:
-        color1: RGB色1
-        color2: RGB色2
-        threshold: 各チャンネルの許容差
-
-    Returns:
-        類似している場合True
-    """
-    return all(abs(int(c1) - int(c2)) <= threshold for c1, c2 in zip(color1, color2))
+    return path_d
 
 
 def detect_background_color(image: np.ndarray) -> Tuple[int, int, int]:
     """
-    画像の背景色を検出（四隅の色から推定）
+    画像の背景色を検出（四隅の最頻色）
 
     Args:
         image: BGR画像
 
     Returns:
-        背景色（RGB）
+        背景色（BGR）
     """
     h, w = image.shape[:2]
+    corner_size = max(5, min(20, h // 20, w // 20))
 
-    # 四隅の色を取得（各コーナーから複数ピクセルをサンプリング）
-    corner_size = min(10, h // 10, w // 10)
     corners = [
-        image[0:corner_size, 0:corner_size],  # 左上
-        image[0:corner_size, w - corner_size:w],  # 右上
-        image[h - corner_size:h, 0:corner_size],  # 左下
-        image[h - corner_size:h, w - corner_size:w],  # 右下
+        image[0:corner_size, 0:corner_size],
+        image[0:corner_size, w - corner_size:w],
+        image[h - corner_size:h, 0:corner_size],
+        image[h - corner_size:h, w - corner_size:w],
     ]
 
-    # 全ての四隅のピクセルを集める
     all_pixels = []
     for corner in corners:
         pixels = corner.reshape(-1, 3)
         all_pixels.extend([tuple(p) for p in pixels])
 
-    # 最頻色を取得
-    counter = Counter(all_pixels)
-    most_common_bgr = counter.most_common(1)[0][0]
-
-    # BGR→RGB変換
-    return (most_common_bgr[2], most_common_bgr[1], most_common_bgr[0])
+    most_common = Counter(all_pixels).most_common(1)[0][0]
+    return most_common
 
 
-def denoise_image(image: np.ndarray) -> np.ndarray:
-    """
-    JPEG/PNG画像のノイズを除去してクリーンな画像にする
-
-    Args:
-        image: BGR画像
-
-    Returns:
-        デノイズされた画像
-    """
-    # 1. Non-local means denoising（強力なノイズ除去）
-    denoised = cv2.fastNlMeansDenoisingColored(
-        image,
-        None,
-        DENOISE_H,
-        DENOISE_H,
-        DENOISE_TEMPLATE_WINDOW,
-        DENOISE_SEARCH_WINDOW,
-    )
-
-    # 2. メディアンフィルタ（塩胡椒ノイズ、アンチエイリアシング除去）
-    denoised = cv2.medianBlur(denoised, MEDIAN_BLUR_SIZE)
-
-    return denoised
-
-
-def posterize_image(image: np.ndarray, levels: int = COLOR_QUANTIZE_LEVELS) -> np.ndarray:
-    """
-    画像をポスタリゼーション（色の階調を減らす）
-
-    Args:
-        image: BGR画像
-        levels: 量子化レベル
-
-    Returns:
-        ポスタリゼーションされた画像
-    """
-    # 各チャンネルを指定レベルに量子化
-    # 例: levels=32 なら 256/32=8段階に
-    divisor = 256 // levels
-    posterized = (image // divisor) * divisor + divisor // 2
-    return posterized.astype(np.uint8)
-
-
-def preprocess_image(image: np.ndarray) -> np.ndarray:
-    """
-    画像の前処理（デノイズ → ポスタリゼーション）
-
-    Args:
-        image: BGR画像
-
-    Returns:
-        前処理後の画像
-    """
-    # Step 1: デノイズ（JPEG/PNGアーティファクト除去）
-    denoised = denoise_image(image)
-
-    # Step 2: ポスタリゼーション（色の階調を減らす）
-    posterized = posterize_image(denoised, COLOR_QUANTIZE_LEVELS)
-
-    return posterized
-
-
-def convert_image_to_svg(
-    input_path: str,
+def create_svg_from_quantized(
+    quantized_image: np.ndarray,
     output_path: str,
-) -> None:
+    min_area: int = 5,
+) -> int:
     """
-    画像をSVGに変換
+    量子化済み画像からSVGを生成
+    穴（内側の輪郭）も正しく処理し、面積の大きいパスから描画
+
+    Args:
+        quantized_image: 量子化済みBGR画像
+        output_path: 出力SVGパス
+        min_area: 最小面積
+
+    Returns:
+        生成されたパス数
+    """
+    h, w = quantized_image.shape[:2]
+
+    # 使用されている色を取得
+    pixels = quantized_image.reshape(-1, 3)
+    unique_colors = np.unique(pixels, axis=0)
+
+    # 背景色を検出
+    bg_color = detect_background_color(quantized_image)
+
+    # 全てのパスを収集（面積でソートするため）
+    all_paths = []  # [(area, color_rgb, path_d), ...]
+
+    # 各色について処理（背景色以外）
+    for color_bgr in unique_colors:
+        color_tuple = tuple(color_bgr)
+
+        # 背景色はスキップ
+        if color_tuple == bg_color:
+            continue
+
+        # この色の輪郭を抽出（穴も含む）
+        contours_with_holes = extract_contours_with_holes(
+            quantized_image,
+            color_tuple,
+            min_area,
+        )
+
+        color_rgb = f"rgb({color_bgr[2]},{color_bgr[1]},{color_bgr[0]})"
+
+        for outer, holes in contours_with_holes:
+            path_d = contour_to_svg_path_with_holes(outer, holes)
+            if path_d:
+                area = cv2.contourArea(outer)
+                all_paths.append((area, color_rgb, path_d))
+
+    # 面積の大きい順にソート（大きいものを先に描画）
+    all_paths.sort(key=lambda x: x[0], reverse=True)
+
+    # SVG作成
+    dwg = svgwrite.Drawing(output_path, size=(w, h))
+
+    # 背景を追加
+    dwg.add(dwg.rect(
+        insert=(0, 0),
+        size=(w, h),
+        fill=f"rgb({bg_color[2]},{bg_color[1]},{bg_color[0]})",
+    ))
+
+    # パスを追加（面積の大きい順、fill-rule: evenoddで穴を表現）
+    for area, color_rgb, path_d in all_paths:
+        dwg.add(dwg.path(
+            d=path_d,
+            fill=color_rgb,
+            stroke="none",
+            fill_rule="evenodd",
+        ))
+
+    dwg.save()
+    return len(all_paths)
+
+
+def process_step_by_step(
+    input_path: str,
+    output_dir: str,
+    num_colors: int = 10,
+) -> dict:
+    """
+    ステップバイステップで処理し、中間結果を保存
 
     Args:
         input_path: 入力画像パス
-        output_path: 出力SVGパス
+        output_dir: 出力ディレクトリ
+        num_colors: 目標色数
+
+    Returns:
+        各ステップの情報を含む辞書
     """
-    # 画像読み込み
-    image = cv2.imread(input_path)
-    if image is None:
-        raise ValueError(f"画像を読み込めません: {input_path}")
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    h, w = image.shape[:2]
+    input_name = Path(input_path).stem
+    results = {}
 
-    # 前処理（アンチエイリアシングノイズ軽減）
-    preprocessed = preprocess_image(image)
+    # Step 0: 元画像の色数
+    original_colors = count_unique_colors(input_path)
+    results["original_colors"] = original_colors
+    print(f"Step 0 - 元画像の色数: {original_colors}")
 
-    # 背景色を検出（元画像から）
-    bg_color = detect_background_color(image)
-
-    # 画像を拡大（輪郭検出の精度向上）
-    scale = UPSCALE_FACTOR
-    upscaled = cv2.resize(
-        preprocessed,
-        (w * scale, h * scale),
-        interpolation=cv2.INTER_NEAREST,  # 最近傍補間でエッジを保持
+    # Step 1: K-meansで色数削減
+    reduced_path = str(output_path / f"{input_name}_1_reduced.png")
+    actual_colors, color_list = reduce_colors_kmeans(
+        input_path,
+        reduced_path,
+        num_colors,
     )
+    results["reduced_path"] = reduced_path
+    results["reduced_colors"] = actual_colors
+    results["color_list"] = color_list
+    print(f"Step 1 - K-means後: {actual_colors}色")
+    print(f"使用色: {color_list}")
 
-    # 色量子化（拡大画像に対して）
-    quantized, colors = quantize_colors(upscaled, NUM_COLORS)
+    # Step 2: SVG生成
+    svg_path = str(output_path / f"{input_name}_2_output.svg")
+    quantized_img = cv2.imread(reduced_path)
+    path_count = create_svg_from_quantized(quantized_img, svg_path)
+    results["svg_path"] = svg_path
+    results["path_count"] = path_count
+    print(f"Step 2 - SVG生成: {path_count}パス")
 
-    # 各色のマスクを生成
-    masks = create_color_masks(quantized, colors)
+    return results
 
-    # 全ての輪郭パスを収集
-    all_contour_paths: List[dict] = []
 
-    # 最小面積の計算（拡大後のスケールで）
-    min_area = max(int(h * w * MIN_AREA_RATIO), MIN_AREA_ABSOLUTE) * (scale ** 2)
+# CLI用（後で整備）
+if __name__ == "__main__":
+    import sys
 
-    for color_rgb, mask in zip(colors, masks):
-        # 背景色と同じ色はスキップ（背景は別途描画済み）
-        if _is_similar_color(color_rgb, bg_color, threshold=20):
-            continue
+    if len(sys.argv) < 3:
+        print("使い方: python converter.py <入力画像> <出力ディレクトリ> [色数]")
+        sys.exit(1)
 
-        # ノイズ除去
-        cleaned_mask = apply_noise_reduction(mask)
+    input_path = sys.argv[1]
+    output_dir = sys.argv[2]
+    num_colors = int(sys.argv[3]) if len(sys.argv) >= 4 else 8
 
-        # 輪郭抽出
-        contours = extract_contours(cleaned_mask, min_area=min_area)
-
-        # 座標をスケールダウンして色情報を追加
-        for contour in contours:
-            # 座標を元のスケールに戻す
-            scaled_points = (contour["points"].astype(np.float32) / scale).astype(np.int32)
-            contour["points"] = scaled_points
-            contour["color_rgb"] = color_rgb
-            all_contour_paths.append(contour)
-
-    # SVG生成（元の画像サイズで）
-    svg_content = create_svg(all_contour_paths, w, h, bg_color)
-
-    # ファイルに保存
-    Path(output_path).write_text(svg_content, encoding="utf-8")
+    process_step_by_step(input_path, output_dir, num_colors)

@@ -4,17 +4,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .converter import convert_image_to_svg
+from .converter import process_step_by_step
 
 
 def main() -> None:
     """CLIエントリーポイント"""
     if len(sys.argv) < 2:
-        print("使い方: python -m image_to_svg <入力画像> [出力SVG]")
+        print("使い方: python -m image_to_svg <入力画像> [出力ディレクトリ] [色数]")
         print()
         print("例:")
-        print("  python -m image_to_svg input.png output.svg")
-        print("  python -m image_to_svg input.png  # → input.svg が生成される")
+        print("  python -m image_to_svg input.png ./output")
+        print("  python -m image_to_svg input.png ./output 10")
         sys.exit(1)
 
     input_path = sys.argv[1]
@@ -24,18 +24,20 @@ def main() -> None:
         print(f"エラー: ファイルが見つかりません: {input_path}")
         sys.exit(1)
 
-    # 出力パスの決定
+    # 出力ディレクトリの決定
     if len(sys.argv) >= 3:
-        output_path = sys.argv[2]
+        output_dir = sys.argv[2]
     else:
-        # 拡張子を .svg に変更
-        output_path = str(Path(input_path).with_suffix(".svg"))
+        output_dir = "./output"
 
-    print(f"変換中: {input_path} → {output_path}")
+    # 色数の決定
+    num_colors = int(sys.argv[3]) if len(sys.argv) >= 4 else 10
+
+    print(f"変換中: {input_path} → {output_dir}")
 
     try:
-        convert_image_to_svg(input_path, output_path)
-        print(f"完了: {output_path}")
+        results = process_step_by_step(input_path, output_dir, num_colors)
+        print(f"完了: {results['svg_path']}")
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)
