@@ -100,6 +100,7 @@ def reduce_colors_kmeans(
 ) -> Tuple[int, list]:
     """
     K-meansで色数を削減してPNGとして保存
+    各クラスタは元画像に存在する最頻色で置き換える（新しい色を生成しない）
 
     Args:
         input_path: 入力画像パス
@@ -113,16 +114,19 @@ def reduce_colors_kmeans(
     if img is None:
         raise ValueError(f"画像を読み込めません: {input_path}")
 
+    # 元のBGRピクセルを保持
+    original_pixels = img.reshape(-1, 3)
+
     # LAB色空間に変換（知覚的に均一）
     lab_image = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
 
     # ピクセルデータを2D配列に変形
-    pixels = lab_image.reshape(-1, 3).astype(np.float32)
+    pixels_lab = lab_image.reshape(-1, 3).astype(np.float32)
 
     # K-meansクラスタリング
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-    _, labels, centers = cv2.kmeans(
-        pixels,
+    _, labels, _ = cv2.kmeans(
+        pixels_lab,
         num_colors,
         None,
         criteria,
@@ -130,14 +134,23 @@ def reduce_colors_kmeans(
         cv2.KMEANS_PP_CENTERS,
     )
 
-    # LAB → BGR
-    centers_lab = centers.reshape(1, -1, 3).astype(np.uint8)
-    centers_bgr = cv2.cvtColor(centers_lab, cv2.COLOR_LAB2BGR)
-    centers_bgr = centers_bgr.reshape(-1, 3)
-
-    # 量子化された画像を生成
     labels_flat = labels.flatten()
-    quantized_pixels = centers_bgr[labels_flat]
+
+    # 各クラスタの代表色を元画像の最頻色から選択
+    representative_colors = np.zeros((num_colors, 3), dtype=np.uint8)
+    for cluster_id in range(num_colors):
+        mask = labels_flat == cluster_id
+        if not np.any(mask):
+            continue
+
+        cluster_pixels = original_pixels[mask]
+        # クラスタ内の最頻色を取得
+        unique, counts = np.unique(cluster_pixels, axis=0, return_counts=True)
+        most_frequent_color = unique[np.argmax(counts)]
+        representative_colors[cluster_id] = most_frequent_color
+
+    # 量子化された画像を生成（元画像の色のみを使用）
+    quantized_pixels = representative_colors[labels_flat]
     quantized_image = quantized_pixels.reshape(img.shape).astype(np.uint8)
 
     # 実際の色数と色リスト
@@ -155,10 +168,11 @@ def reduce_colors_kmeans(
 def reduce_colors_by_frequency(
     input_path: str,
     output_path: str,
-    target_colors: int = 10,
+    target_colors: int = 256,
     initial_threshold: float = 10.0,
     threshold_step: float = 5.0,
     max_iterations: int = 20,
+    intermediate_dir: str | None = None,
 ) -> Tuple[int, list]:
     """
     効率的に近似色を最頻色に統合して色数を削減
@@ -176,6 +190,7 @@ def reduce_colors_by_frequency(
         initial_threshold: LAB色空間での初期色差閾値
         threshold_step: 閾値の増加幅
         max_iterations: 最大反復回数
+        intermediate_dir: 中間結果を保存するディレクトリ（Noneの場合は保存しない）
 
     Returns:
         (実際の色数, 使用された色のRGBリスト)
@@ -186,6 +201,11 @@ def reduce_colors_by_frequency(
 
     h, w = img.shape[:2]
     pixels = img.reshape(-1, 3)
+
+    # 中間結果保存用ディレクトリ
+    if intermediate_dir:
+        intermediate_path = Path(intermediate_dir)
+        intermediate_path.mkdir(parents=True, exist_ok=True)
 
     # 全色とその出現回数・位置を取得
     unique_colors, inverse, counts = np.unique(
@@ -262,6 +282,17 @@ def reduce_colors_by_frequency(
         unique_colors = new_unique_colors
         inverse = new_inverse
         counts = new_counts
+
+        # 中間結果を保存（256色以下になったら）
+        if intermediate_dir and len(unique_colors) <= 256:
+            intermediate_pixels = unique_colors[inverse]
+            intermediate_image = intermediate_pixels.reshape(h, w, 3).astype(np.uint8)
+            intermediate_rgb = cv2.cvtColor(intermediate_image, cv2.COLOR_BGR2RGB)
+            intermediate_pil = Image.fromarray(intermediate_rgb)
+            intermediate_pil.save(
+                intermediate_path / f"iter_{iteration + 1:02d}_{len(unique_colors)}colors.png",
+                "PNG",
+            )
 
         # LABも再計算
         unique_colors_lab = cv2.cvtColor(
@@ -758,8 +789,9 @@ def create_svg_from_quantized(
 def process_step_by_step(
     input_path: str,
     output_dir: str,
-    num_colors: int = 10,
+    num_colors: int = 256,
     use_iterative: bool = True,
+    save_intermediate: bool = False,
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -769,6 +801,7 @@ def process_step_by_step(
         output_dir: 出力ディレクトリ
         num_colors: 目標色数
         use_iterative: True=反復的色統合、False=K-means
+        save_intermediate: True=各イテレーションの中間結果をPNGで保存
 
     Returns:
         各ステップの情報を含む辞書
@@ -778,6 +811,11 @@ def process_step_by_step(
 
     input_name = Path(input_path).stem
     results = {}
+
+    # 中間結果保存用ディレクトリ
+    intermediate_dir = None
+    if save_intermediate:
+        intermediate_dir = str(output_path / f"{input_name}_intermediate")
 
     # Step 0: 元画像の色数
     original_colors = count_unique_colors(input_path)
@@ -793,6 +831,7 @@ def process_step_by_step(
             input_path,
             reduced_path,
             target_colors=num_colors,
+            intermediate_dir=intermediate_dir,
         )
     else:
         print("Step 1 - K-means...")
