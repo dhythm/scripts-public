@@ -34,6 +34,8 @@ dependencies = [
     "demucs>=4.0.0",
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
+    "svgwrite>=1.4.0",
+    "pytest>=8.0.0",
 ]
 
 [project.scripts]
