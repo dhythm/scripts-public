@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 from typing import List, Tuple
@@ -11,6 +12,14 @@ import numpy as np
 import svgwrite
 import vtracer
 from PIL import Image
+
+
+def _log(message: str, start_time: float | None = None) -> None:
+    """タイムスタンプ付きログ出力"""
+    elapsed = ""
+    if start_time is not None:
+        elapsed = f" ({time.time() - start_time:.2f}s)"
+    print(f"[{time.strftime('%H:%M:%S')}]{elapsed} {message}")
 
 
 def upscale_image(image: np.ndarray, scale: int = 2) -> np.ndarray:
@@ -1052,6 +1061,7 @@ def process_step_by_step(
     upscale_factor: int = 2,
     use_vtracer: bool = True,
     vtracer_mode: str = "spline",
+    skip_region_absorption: bool = True,
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -1067,6 +1077,7 @@ def process_step_by_step(
         upscale_factor: 拡大倍率（1=拡大なし、2=2倍、4=4倍）
         use_vtracer: True=vtracerでSVG生成（ベジェ曲線）、False=従来の直線パス
         vtracer_mode: 'spline'（ベジェ曲線）or 'polygon'（多角形）
+        skip_region_absorption: True=小領域吸収をスキップ（デフォルト、高速）
 
     Returns:
         各ステップの情報を含む辞書
@@ -1084,6 +1095,8 @@ def process_step_by_step(
         Path(intermediate_dir).mkdir(parents=True, exist_ok=True)
 
     # Step 0: 元画像の読み込みと情報取得
+    total_start = time.time()
+    step_start = time.time()
     original_img = cv2.imread(input_path)
     if original_img is None:
         raise ValueError(f"画像を読み込めません: {input_path}")
@@ -1092,14 +1105,15 @@ def process_step_by_step(
     original_colors = count_unique_colors(input_path)
     results["original_colors"] = original_colors
     results["original_size"] = (original_w, original_h)
-    print(f"Step 0 - 元画像: {original_w}x{original_h}, {original_colors}色")
+    _log(f"Step 0 - 元画像: {original_w}x{original_h}, {original_colors}色", step_start)
 
     # Step 1: 画像を拡大（最近傍補間で色を保持）
+    step_start = time.time()
     if upscale_factor > 1:
-        print(f"Step 1 - 画像を{upscale_factor}倍に拡大...")
+        _log(f"Step 1 - 画像を{upscale_factor}倍に拡大...")
         upscaled_img = upscale_image(original_img, upscale_factor)
         upscaled_h, upscaled_w = upscaled_img.shape[:2]
-        print(f"  拡大後サイズ: {upscaled_w}x{upscaled_h}")
+        _log(f"  拡大後サイズ: {upscaled_w}x{upscaled_h}", step_start)
 
         # 拡大画像を一時保存
         upscaled_path = str(output_path / f"{input_name}_1_upscaled.png")
@@ -1114,7 +1128,8 @@ def process_step_by_step(
         adjusted_min_region_area = min_region_area
 
     # Step 2: 色数削減（拡大画像に対して）
-    print(f"Step 2 - 色数削減（目標: {final_colors}色）...")
+    step_start = time.time()
+    _log(f"Step 2 - 色数削減（目標: {final_colors}色）...")
 
     # K-meansで直接目標色数に削減（元画像の色を保持）
     h, w = upscaled_img.shape[:2]
@@ -1156,33 +1171,38 @@ def process_step_by_step(
     results["quantized_path"] = quantized_path
 
     unique_colors = np.unique(quantized_pixels, axis=0)
-    print(f"  量子化後の色数: {len(unique_colors)}")
+    _log(f"  量子化後の色数: {len(unique_colors)}", step_start)
 
     # Step 3: 小領域の吸収
-    print(f"Step 3 - 小領域の吸収（閾値: {adjusted_min_region_area}px）...")
-    cleaned_img = quantized_img.copy()
+    step_start = time.time()
+    if skip_region_absorption:
+        _log("Step 3 - 小領域の吸収をスキップ（vtracerのfilter_speckleで代替）")
+        cleaned_img = quantized_img
+    else:
+        _log(f"Step 3 - 小領域の吸収（閾値: {adjusted_min_region_area}px）...")
+        cleaned_img = quantized_img.copy()
 
-    for color in unique_colors:
-        color_mask = np.all(quantized_img == color, axis=2).astype(np.uint8)
-        num_labels, labels_cc, stats, _ = cv2.connectedComponentsWithStats(
-            color_mask, connectivity=8
-        )
+        for color in unique_colors:
+            color_mask = np.all(quantized_img == color, axis=2).astype(np.uint8)
+            num_labels, labels_cc, stats, _ = cv2.connectedComponentsWithStats(
+                color_mask, connectivity=8
+            )
 
-        for label_id in range(1, num_labels):
-            area = stats[label_id, cv2.CC_STAT_AREA]
-            if area < adjusted_min_region_area:
-                region_mask = labels_cc == label_id
-                kernel = np.ones((3, 3), dtype=np.uint8)
-                dilated = cv2.dilate(region_mask.astype(np.uint8), kernel)
-                boundary = dilated.astype(bool) & ~region_mask
+            for label_id in range(1, num_labels):
+                area = stats[label_id, cv2.CC_STAT_AREA]
+                if area < adjusted_min_region_area:
+                    region_mask = labels_cc == label_id
+                    kernel = np.ones((3, 3), dtype=np.uint8)
+                    dilated = cv2.dilate(region_mask.astype(np.uint8), kernel)
+                    boundary = dilated.astype(bool) & ~region_mask
 
-                if np.any(boundary):
-                    boundary_colors = quantized_img[boundary]
-                    unique_boundary, counts = np.unique(
-                        boundary_colors, axis=0, return_counts=True
-                    )
-                    dominant_color = unique_boundary[np.argmax(counts)]
-                    cleaned_img[region_mask] = dominant_color
+                    if np.any(boundary):
+                        boundary_colors = quantized_img[boundary]
+                        unique_boundary, counts = np.unique(
+                            boundary_colors, axis=0, return_counts=True
+                        )
+                        dominant_color = unique_boundary[np.argmax(counts)]
+                        cleaned_img[region_mask] = dominant_color
 
     # クリーニング結果を保存
     cleaned_path = str(output_path / f"{input_name}_3_cleaned.png")
@@ -1193,15 +1213,16 @@ def process_step_by_step(
     final_pixels = cleaned_img.reshape(-1, 3)
     final_unique = np.unique(final_pixels, axis=0)
     colors_rgb = [(int(c[2]), int(c[1]), int(c[0])) for c in final_unique]
-    print(f"  クリーニング後の色数: {len(final_unique)}")
-    print(f"  使用色: {colors_rgb}")
+    _log(f"  処理後の色数: {len(final_unique)}", step_start)
+    _log(f"  使用色: {colors_rgb}")
 
     results["final_colors"] = len(final_unique)
     results["color_list"] = colors_rgb
 
     # Step 4: SVG生成（高解像度画像から、viewBoxで元サイズに）
+    step_start = time.time()
     method_name = "vtracer" if use_vtracer else "legacy"
-    print(f"Step 4 - SVG生成（{method_name}）...")
+    _log(f"Step 4 - SVG生成（{method_name}）...")
     svg_path = str(output_path / f"{input_name}_4_output.svg")
 
     if use_vtracer:
@@ -1224,7 +1245,8 @@ def process_step_by_step(
     results["svg_path"] = svg_path
     results["path_count"] = path_count
     results["method"] = method_name
-    print(f"  SVG生成: {path_count}パス")
+    _log(f"  SVG生成: {path_count}パス", step_start)
+    _log(f"完了（総処理時間: {time.time() - total_start:.2f}s）")
 
     return results
 
