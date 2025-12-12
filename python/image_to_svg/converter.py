@@ -980,11 +980,83 @@ def create_svg_from_quantized(
     return len(all_paths)
 
 
+def merge_similar_colors(
+    image: np.ndarray,
+    threshold: float = 10.0,
+) -> np.ndarray:
+    """
+    類似色をマージして色数を削減
+
+    K-means後のアンチエイリアス由来の微小な色差を統合する
+    LAB色空間で閾値以内の色を最頻色にマージ
+
+    Args:
+        image: BGR画像
+        threshold: LAB色空間での色差閾値
+
+    Returns:
+        類似色がマージされた画像
+    """
+    h, w = image.shape[:2]
+    pixels = image.reshape(-1, 3)
+
+    # ユニーク色と出現回数を取得
+    unique_colors, inverse, counts = np.unique(
+        pixels, axis=0, return_inverse=True, return_counts=True
+    )
+
+    if len(unique_colors) <= 1:
+        return image
+
+    # BGR → LAB
+    unique_colors_lab = cv2.cvtColor(
+        unique_colors.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+    ).reshape(-1, 3).astype(np.float32)
+
+    # 出現頻度順にソート
+    sorted_indices = np.argsort(-counts)
+
+    # マッピング配列
+    mapping = np.arange(len(unique_colors))
+    processed = np.zeros(len(unique_colors), dtype=bool)
+
+    for idx in sorted_indices:
+        if processed[idx]:
+            continue
+
+        color_lab = unique_colors_lab[idx]
+
+        # 未処理の色との距離を計算
+        unprocessed_mask = ~processed
+        unprocessed_indices = np.where(unprocessed_mask)[0]
+
+        if len(unprocessed_indices) == 0:
+            break
+
+        unprocessed_labs = unique_colors_lab[unprocessed_indices]
+        distances = np.sqrt(np.sum((unprocessed_labs - color_lab) ** 2, axis=1))
+
+        # 閾値以内の色をマージ
+        similar_mask = distances <= threshold
+        similar_indices = unprocessed_indices[similar_mask]
+
+        # 最頻色にマッピング
+        for sim_idx in similar_indices:
+            mapping[sim_idx] = idx
+            processed[sim_idx] = True
+
+    # マッピングを適用
+    new_color_indices = mapping[inverse]
+    new_pixels = unique_colors[new_color_indices]
+
+    return new_pixels.reshape(h, w, 3).astype(np.uint8)
+
+
 def vectorize_with_vtracer(
     input_path: str,
     output_path: str,
     mode: str = "spline",
-    filter_speckle: int = 4,
+    filter_speckle: int = 16,
     color_precision: int = 8,
     corner_threshold: int = 60,
     length_threshold: float = 4.0,
@@ -1062,6 +1134,8 @@ def process_step_by_step(
     use_vtracer: bool = True,
     vtracer_mode: str = "spline",
     skip_region_absorption: bool = True,
+    color_merge_threshold: float = 10.0,
+    filter_speckle: int = 16,
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -1078,6 +1152,8 @@ def process_step_by_step(
         use_vtracer: True=vtracerでSVG生成（ベジェ曲線）、False=従来の直線パス
         vtracer_mode: 'spline'（ベジェ曲線）or 'polygon'（多角形）
         skip_region_absorption: True=小領域吸収をスキップ（デフォルト、高速）
+        color_merge_threshold: 類似色マージの閾値（LAB色空間での距離、デフォルト10.0）
+        filter_speckle: vtracerのノイズ除去閾値（デフォルト16、大きいほど小領域を除去）
 
     Returns:
         各ステップの情報を含む辞書
@@ -1164,14 +1240,29 @@ def process_step_by_step(
     quantized_pixels = representative_colors[labels_flat]
     quantized_img = quantized_pixels.reshape(h, w, 3).astype(np.uint8)
 
-    # 量子化結果を保存
+    # 量子化結果を保存（マージ前）
     quantized_path = str(output_path / f"{input_name}_2_quantized.png")
     quantized_rgb = cv2.cvtColor(quantized_img, cv2.COLOR_BGR2RGB)
     Image.fromarray(quantized_rgb).save(quantized_path, "PNG")
     results["quantized_path"] = quantized_path
 
     unique_colors = np.unique(quantized_pixels, axis=0)
-    _log(f"  量子化後の色数: {len(unique_colors)}", step_start)
+    _log(f"  K-means後の色数: {len(unique_colors)}", step_start)
+
+    # Step 2.5: 類似色のマージ（アンチエイリアス由来の微小な色差を統合）
+    step_start = time.time()
+    _log(f"Step 2.5 - 類似色のマージ（閾値: {color_merge_threshold}）...")
+    quantized_img = merge_similar_colors(quantized_img, threshold=color_merge_threshold)
+
+    # マージ結果を保存
+    merged_path = str(output_path / f"{input_name}_2b_merged.png")
+    merged_rgb = cv2.cvtColor(quantized_img, cv2.COLOR_BGR2RGB)
+    Image.fromarray(merged_rgb).save(merged_path, "PNG")
+    results["merged_path"] = merged_path
+
+    merged_pixels = quantized_img.reshape(-1, 3)
+    unique_colors = np.unique(merged_pixels, axis=0)
+    _log(f"  マージ後の色数: {len(unique_colors)}", step_start)
 
     # Step 3: 小領域の吸収
     step_start = time.time()
@@ -1231,7 +1322,7 @@ def process_step_by_step(
             cleaned_path,
             svg_path,
             mode=vtracer_mode,
-            filter_speckle=4,
+            filter_speckle=filter_speckle,
             color_precision=8,  # 前処理済みなので最大精度
             original_size=(original_w, original_h) if upscale_factor > 1 else None,
         )

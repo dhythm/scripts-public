@@ -21,15 +21,18 @@ def main() -> None:
         print("  python -m image_to_svg input.png ./output 256 --polygon")
         print()
         print("オプション:")
-        print("  --scale N       拡大倍率（デフォルト: 4、大きいほど境界が滑らか）")
-        print("  --intermediate  各ステップの中間結果をPNGで保存")
-        print("  --legacy        従来の直線パスSVG生成を使用（デフォルト: vtracer）")
-        print("  --polygon       vtracer使用時に多角形モードを使用（デフォルト: spline）")
-        print("  --absorption    小領域吸収を有効化（デフォルト: スキップ、低速）")
+        print("  --scale N         拡大倍率（デフォルト: 4、大きいほど境界が滑らか）")
+        print("  --filter-speckle N  vtracerのノイズ除去閾値（デフォルト: 16、大きいほど小領域を除去）")
+        print("  --color-merge N   類似色マージの閾値（デフォルト: 10.0、LAB色空間）")
+        print("  --intermediate    各ステップの中間結果をPNGで保存")
+        print("  --legacy          従来の直線パスSVG生成を使用（デフォルト: vtracer）")
+        print("  --polygon         vtracer使用時に多角形モードを使用（デフォルト: spline）")
+        print("  --absorption      小領域吸収を有効化（デフォルト: スキップ、低速）")
         print()
         print("処理フロー:")
         print("  1. 画像を拡大（最近傍補間で色を保持）")
         print("  2. K-meansで色数削減（元画像の色を保持）")
+        print("  2.5. 類似色のマージ（アンチエイリアス由来の微小な色差を統合）")
         print("  3. 小領域の吸収（--absorptionで有効化、デフォルトはスキップ）")
         print("  4. SVG生成（vtracer: ベジェ曲線、legacy: 直線パス）")
         sys.exit(1)
@@ -40,13 +43,21 @@ def main() -> None:
     use_polygon = "--polygon" in sys.argv
     use_absorption = "--absorption" in sys.argv
 
-    # --scale オプションの解析
+    # 値を持つオプションの解析
     upscale_factor = 4  # デフォルト
+    filter_speckle = 16  # デフォルト
+    color_merge_threshold = 10.0  # デフォルト
     args_filtered = []
     i = 1
     while i < len(sys.argv):
         if sys.argv[i] == "--scale" and i + 1 < len(sys.argv):
             upscale_factor = int(sys.argv[i + 1])
+            i += 2
+        elif sys.argv[i] == "--filter-speckle" and i + 1 < len(sys.argv):
+            filter_speckle = int(sys.argv[i + 1])
+            i += 2
+        elif sys.argv[i] == "--color-merge" and i + 1 < len(sys.argv):
+            color_merge_threshold = float(sys.argv[i + 1])
             i += 2
         elif sys.argv[i] in ("--intermediate", "--legacy", "--polygon", "--absorption"):
             i += 1
@@ -79,6 +90,8 @@ def main() -> None:
     print(f"目標色数: {final_colors}")
     print(f"拡大倍率: {upscale_factor}倍")
     print(f"SVG生成: {'vtracer (' + vtracer_mode + ')' if use_vtracer else 'legacy'}")
+    print(f"filter_speckle: {filter_speckle}")
+    print(f"類似色マージ閾値: {color_merge_threshold}")
     print(f"小領域吸収: {'有効' if use_absorption else 'スキップ'}")
     if save_intermediate:
         print("中間結果を保存します")
@@ -93,6 +106,8 @@ def main() -> None:
             use_vtracer=use_vtracer,
             vtracer_mode=vtracer_mode,
             skip_region_absorption=not use_absorption,
+            color_merge_threshold=color_merge_threshold,
+            filter_speckle=filter_speckle,
         )
         print(f"完了: {results['svg_path']}")
         print(f"最終色数: {results['final_colors']}")

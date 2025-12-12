@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import pytest
 
-from image_to_svg import vectorize_with_vtracer, process_step_by_step
+from image_to_svg import vectorize_with_vtracer, process_step_by_step, merge_similar_colors
 
 # 古いAPIのテストは参考として残すが、実装が変わったためスキップ
 # from image_to_svg import (
@@ -236,6 +236,63 @@ class TestDetectBackgroundColor:
         color = detect_background_color(image)
 
         assert color == (0, 0, 255)  # RGB形式で青
+
+
+class TestMergeSimilarColors:
+    """類似色マージのテスト"""
+
+    def test_merge_identical_colors(self):
+        """同一色は変化しない"""
+        # 単色画像
+        image = np.full((100, 100, 3), [100, 100, 100], dtype=np.uint8)
+        result = merge_similar_colors(image, threshold=10.0)
+
+        assert np.array_equal(result, image)
+
+    def test_merge_similar_colors_to_most_frequent(self):
+        """類似色は最頻色にマージされる"""
+        # 上半分: 多数の色 (0, 0, 0)
+        # 下半分: 少数の類似色 (5, 5, 5) - LAB距離で10以内
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        image[:60, :] = [0, 0, 0]  # 60%
+        image[60:, :] = [5, 5, 5]  # 40%
+
+        result = merge_similar_colors(image, threshold=10.0)
+
+        # すべて (0, 0, 0) にマージされるべき
+        unique_colors = np.unique(result.reshape(-1, 3), axis=0)
+        assert len(unique_colors) == 1
+
+    def test_preserve_distant_colors(self):
+        """閾値以上離れた色は保持される"""
+        # 赤と青は LAB 色空間で十分離れている
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        image[:50, :] = [0, 0, 255]  # BGR: 赤
+        image[50:, :] = [255, 0, 0]  # BGR: 青
+
+        result = merge_similar_colors(image, threshold=10.0)
+
+        unique_colors = np.unique(result.reshape(-1, 3), axis=0)
+        assert len(unique_colors) == 2
+
+    def test_antialiasing_simulation(self):
+        """アンチエイリアス由来の微小な色差がマージされる"""
+        # 主要色: (0, 0, 0) - 大きな領域
+        # アンチエイリアス由来: (0, 1, 0), (1, 1, 1), (2, 2, 2) など
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        image[:] = [0, 0, 0]  # 基本色
+        image[0:5, :] = [0, 1, 0]  # わずかに異なる色
+        image[5:10, :] = [1, 1, 1]
+        image[10:15, :] = [2, 2, 2]
+
+        original_colors = np.unique(image.reshape(-1, 3), axis=0)
+        assert len(original_colors) == 4
+
+        result = merge_similar_colors(image, threshold=10.0)
+
+        merged_colors = np.unique(result.reshape(-1, 3), axis=0)
+        # アンチエイリアス色がマージされて1色になるべき
+        assert len(merged_colors) == 1
 
 
 class TestVectorizeWithVtracer:
