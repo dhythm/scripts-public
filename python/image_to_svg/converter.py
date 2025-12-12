@@ -1,6 +1,7 @@
 """画像からSVGへの変換処理 - Step by Step実装"""
 from __future__ import annotations
 
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import List, Tuple
@@ -8,6 +9,7 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 import svgwrite
+import vtracer
 from PIL import Image
 
 
@@ -969,15 +971,87 @@ def create_svg_from_quantized(
     return len(all_paths)
 
 
+def vectorize_with_vtracer(
+    input_path: str,
+    output_path: str,
+    mode: str = "spline",
+    filter_speckle: int = 4,
+    color_precision: int = 8,
+    corner_threshold: int = 60,
+    length_threshold: float = 4.0,
+    splice_threshold: int = 45,
+    original_size: tuple[int, int] | None = None,
+) -> int:
+    """
+    vtracerを使用して画像をSVGに変換
+
+    Args:
+        input_path: 入力画像パス
+        output_path: 出力SVGパス
+        mode: 'spline'（ベジェ曲線）or 'polygon'（多角形）or 'none'
+        filter_speckle: ノイズ除去閾値（小さい領域を除去）
+        color_precision: 色精度（1-8、高いほど色数が多い）
+        corner_threshold: コーナー検出角度（度）
+        length_threshold: 長さ閾値
+        splice_threshold: 接合閾値（度）
+        original_size: 元のサイズ(width, height)、指定時はviewBoxを調整
+
+    Returns:
+        生成されたパス数
+    """
+    # 一時ファイルに出力してから読み込む
+    with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    vtracer.convert_image_to_svg_py(
+        input_path,
+        tmp_path,
+        colormode="color",
+        hierarchical="stacked",
+        mode=mode,
+        filter_speckle=filter_speckle,
+        color_precision=color_precision,
+        corner_threshold=corner_threshold,
+        length_threshold=length_threshold,
+        splice_threshold=splice_threshold,
+    )
+
+    svg_str = Path(tmp_path).read_text()
+    Path(tmp_path).unlink()
+
+    # viewBoxの調整が必要な場合
+    if original_size is not None:
+        orig_w, orig_h = original_size
+        # vtracerが生成したSVGのサイズを元のサイズに変更
+        # width="xxx" height="yyy" を width="orig_w" height="orig_h" に置換
+        import re
+
+        # viewBoxは維持し、表示サイズのみ変更
+        svg_str = re.sub(
+            r'width="(\d+)" height="(\d+)"',
+            f'width="{orig_w}" height="{orig_h}"',
+            svg_str,
+            count=1,
+        )
+
+    Path(output_path).write_text(svg_str)
+
+    # パス数をカウント
+    path_count = svg_str.count("<path")
+    return path_count
+
+
 def process_step_by_step(
     input_path: str,
     output_dir: str,
     num_colors: int = 256,
     use_iterative: bool = True,
     save_intermediate: bool = False,
-    final_colors: int = 15,
+    final_colors: int = 256,
     min_region_area: int = 50,
     upscale_factor: int = 2,
+    use_vtracer: bool = True,
+    vtracer_mode: str = "spline",
 ) -> dict:
     """
     ステップバイステップで処理し、中間結果を保存
@@ -991,6 +1065,8 @@ def process_step_by_step(
         final_colors: 第2段階（領域ベース統合）の最終目標色数
         min_region_area: 最小領域面積（これ以下は隣接領域に吸収）
         upscale_factor: 拡大倍率（1=拡大なし、2=2倍、4=4倍）
+        use_vtracer: True=vtracerでSVG生成（ベジェ曲線）、False=従来の直線パス
+        vtracer_mode: 'spline'（ベジェ曲線）or 'polygon'（多角形）
 
     Returns:
         各ステップの情報を含む辞書
@@ -1124,17 +1200,30 @@ def process_step_by_step(
     results["color_list"] = colors_rgb
 
     # Step 4: SVG生成（高解像度画像から、viewBoxで元サイズに）
-    print("Step 4 - SVG生成...")
+    method_name = "vtracer" if use_vtracer else "legacy"
+    print(f"Step 4 - SVG生成（{method_name}）...")
     svg_path = str(output_path / f"{input_name}_4_output.svg")
 
-    # SVGを生成（高解像度のまま、viewBoxで元サイズ表示）
-    path_count = create_svg_from_quantized(
-        cleaned_img,
-        svg_path,
-        original_size=(original_w, original_h) if upscale_factor > 1 else None,
-    )
+    if use_vtracer:
+        # vtracerでSVG生成（ベジェ曲線対応）
+        path_count = vectorize_with_vtracer(
+            cleaned_path,
+            svg_path,
+            mode=vtracer_mode,
+            filter_speckle=4,
+            color_precision=8,  # 前処理済みなので最大精度
+            original_size=(original_w, original_h) if upscale_factor > 1 else None,
+        )
+    else:
+        # 従来の直線パスSVG生成
+        path_count = create_svg_from_quantized(
+            cleaned_img,
+            svg_path,
+            original_size=(original_w, original_h) if upscale_factor > 1 else None,
+        )
     results["svg_path"] = svg_path
     results["path_count"] = path_count
+    results["method"] = method_name
     print(f"  SVG生成: {path_count}パス")
 
     return results

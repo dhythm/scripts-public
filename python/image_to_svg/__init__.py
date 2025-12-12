@@ -7,6 +7,7 @@ from .converter import (
     count_unique_colors,
     reduce_colors_kmeans,
     process_step_by_step,
+    vectorize_with_vtracer,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "count_unique_colors",
     "reduce_colors_kmeans",
     "process_step_by_step",
+    "vectorize_with_vtracer",
 ]

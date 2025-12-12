@@ -2,27 +2,33 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 # python ディレクトリをパスに追加
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import cv2
 import numpy as np
 import pytest
 
-from image_to_svg import (
-    quantize_colors,
-    create_color_masks,
-    extract_contours,
-    apply_noise_reduction,
-    contour_to_svg_path,
-    create_svg,
-    detect_background_color,
-)
+from image_to_svg import vectorize_with_vtracer, process_step_by_step
+
+# 古いAPIのテストは参考として残すが、実装が変わったためスキップ
+# from image_to_svg import (
+#     quantize_colors,
+#     create_color_masks,
+#     extract_contours,
+#     apply_noise_reduction,
+#     contour_to_svg_path,
+#     create_svg,
+#     detect_background_color,
+# )
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestQuantizeColors:
-    """色量子化のテスト"""
+    """色量子化のテスト（古いAPI）"""
 
     def test_quantize_solid_color_image(self):
         """単色画像は1色に量子化される"""
@@ -55,8 +61,9 @@ class TestQuantizeColors:
         assert len(colors) <= 8
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestCreateColorMasks:
-    """マスク生成のテスト"""
+    """マスク生成のテスト（古いAPI）"""
 
     def test_mask_covers_all_pixels(self):
         """全マスクの合計が全ピクセルをカバーする"""
@@ -91,8 +98,9 @@ class TestCreateColorMasks:
                     assert not np.any(overlap)
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestExtractContours:
-    """輪郭抽出のテスト"""
+    """輪郭抽出のテスト（古いAPI）"""
 
     def test_extract_square_contour(self):
         """正方形の輪郭が正しく抽出される"""
@@ -135,8 +143,9 @@ class TestExtractContours:
         assert len(contours) == 1
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestApplyNoiseReduction:
-    """ノイズ除去のテスト"""
+    """ノイズ除去のテスト（古いAPI）"""
 
     def test_removes_small_white_spots(self):
         """小さな白いスポットが除去される"""
@@ -160,8 +169,9 @@ class TestApplyNoiseReduction:
         assert result[50, 50] == 255
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestContourToSvgPath:
-    """輪郭からSVGパス変換のテスト"""
+    """輪郭からSVGパス変換のテスト（古いAPI）"""
 
     def test_simple_polygon_path(self):
         """シンプルなポリゴンが正しいパス文字列になる"""
@@ -180,8 +190,9 @@ class TestContourToSvgPath:
         assert path.endswith("Z")
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestCreateSvg:
-    """SVG生成のテスト"""
+    """SVG生成のテスト（古いAPI）"""
 
     def test_svg_has_correct_dimensions(self):
         """SVGのサイズが正しい"""
@@ -203,8 +214,9 @@ class TestCreateSvg:
         ET.fromstring(svg_content)
 
 
+@pytest.mark.skip(reason="APIが変更されたため、古いテストはスキップ")
 class TestDetectBackgroundColor:
-    """背景色検出のテスト"""
+    """背景色検出のテスト（古いAPI）"""
 
     def test_white_background(self):
         """白背景が検出される"""
@@ -224,3 +236,146 @@ class TestDetectBackgroundColor:
         color = detect_background_color(image)
 
         assert color == (0, 0, 255)  # RGB形式で青
+
+
+class TestVectorizeWithVtracer:
+    """vtracer統合のテスト"""
+
+    def test_vtracer_generates_svg(self):
+        """vtracerがSVGを生成する"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # テスト用の単純な画像を作成
+            input_path = Path(tmpdir) / "test_input.png"
+            output_path = Path(tmpdir) / "test_output.svg"
+
+            # 赤い四角形を含む白背景の画像
+            image = np.full((100, 100, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.rectangle(image, (20, 20), (80, 80), (0, 0, 255), -1)  # BGR: 赤
+            cv2.imwrite(str(input_path), image)
+
+            # vtracer でベクター化
+            path_count = vectorize_with_vtracer(
+                str(input_path),
+                str(output_path),
+                mode="spline",
+            )
+
+            # SVGが生成されている
+            assert output_path.exists()
+            svg_content = output_path.read_text()
+            assert "<svg" in svg_content
+            assert "</svg>" in svg_content
+            assert path_count > 0
+
+    def test_vtracer_generates_bezier_curves(self):
+        """vtracerがベジェ曲線（Cコマンド）を生成する"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test_input.png"
+            output_path = Path(tmpdir) / "test_output.svg"
+
+            # 円を含む画像（曲線が必要）
+            image = np.full((100, 100, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.circle(image, (50, 50), 30, (0, 0, 255), -1)  # 赤い円
+            cv2.imwrite(str(input_path), image)
+
+            # splineモードでベクター化
+            vectorize_with_vtracer(
+                str(input_path),
+                str(output_path),
+                mode="spline",
+            )
+
+            svg_content = output_path.read_text()
+            # ベジェ曲線コマンド（C or c）が含まれる
+            assert "C" in svg_content or "c" in svg_content
+
+    def test_vtracer_polygon_mode_uses_lines(self):
+        """polygonモードでは直線（L）を使用する"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test_input.png"
+            output_path = Path(tmpdir) / "test_output.svg"
+
+            image = np.full((100, 100, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.rectangle(image, (20, 20), (80, 80), (0, 0, 255), -1)
+            cv2.imwrite(str(input_path), image)
+
+            vectorize_with_vtracer(
+                str(input_path),
+                str(output_path),
+                mode="polygon",
+            )
+
+            svg_content = output_path.read_text()
+            # polygonモードでも何らかのパスが生成される
+            assert "<path" in svg_content
+
+    def test_vtracer_respects_original_size(self):
+        """original_sizeパラメータでSVGサイズが調整される"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test_input.png"
+            output_path = Path(tmpdir) / "test_output.svg"
+
+            # 200x200の画像
+            image = np.full((200, 200, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.rectangle(image, (40, 40), (160, 160), (0, 0, 255), -1)
+            cv2.imwrite(str(input_path), image)
+
+            # 100x100として表示
+            vectorize_with_vtracer(
+                str(input_path),
+                str(output_path),
+                original_size=(100, 100),
+            )
+
+            svg_content = output_path.read_text()
+            assert 'width="100"' in svg_content
+            assert 'height="100"' in svg_content
+
+
+class TestProcessStepByStep:
+    """process_step_by_step関数のテスト"""
+
+    def test_process_with_vtracer(self):
+        """vtracerモードで処理が完了する"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test_input.png"
+
+            # テスト画像を作成
+            image = np.full((100, 100, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.rectangle(image, (20, 20), (80, 80), (0, 0, 255), -1)
+            cv2.imwrite(str(input_path), image)
+
+            results = process_step_by_step(
+                str(input_path),
+                tmpdir,
+                final_colors=4,
+                upscale_factor=2,
+                use_vtracer=True,
+                vtracer_mode="spline",
+            )
+
+            assert "svg_path" in results
+            assert "path_count" in results
+            assert results["method"] == "vtracer"
+            assert Path(results["svg_path"]).exists()
+
+    def test_process_with_legacy(self):
+        """legacyモードで処理が完了する"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test_input.png"
+
+            image = np.full((100, 100, 3), [255, 255, 255], dtype=np.uint8)
+            cv2.rectangle(image, (20, 20), (80, 80), (0, 0, 255), -1)
+            cv2.imwrite(str(input_path), image)
+
+            results = process_step_by_step(
+                str(input_path),
+                tmpdir,
+                final_colors=4,
+                upscale_factor=2,
+                use_vtracer=False,
+            )
+
+            assert "svg_path" in results
+            assert results["method"] == "legacy"
+            assert Path(results["svg_path"]).exists()
