@@ -14,8 +14,18 @@ import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 from xml.etree import ElementTree as ET
+
+# OpenCV/NumPyの遅延インポート（利用可能かチェック）
+_OPENCV_AVAILABLE = False
+try:
+    import cv2
+    import numpy as np
+
+    _OPENCV_AVAILABLE = True
+except ImportError:
+    pass
 
 
 @dataclass
@@ -120,6 +130,352 @@ def rects_to_bitmap(
                 bitmap[y][x] = True
 
     return dict(bitmaps)
+
+
+# =============================================================================
+# OpenCV版（高速）
+# =============================================================================
+
+
+def rects_to_bitmap_numpy(
+    width: int, height: int, rects: List[Rect]
+) -> Dict[str, "np.ndarray"]:
+    """
+    rect群を色ごとのNumPy配列に変換（OpenCV用）
+
+    Args:
+        width: 画像幅
+        height: 画像高さ
+        rects: rect要素のリスト
+
+    Returns:
+        {color: numpy uint8 array} の辞書
+    """
+    bitmaps: Dict[str, np.ndarray] = {}
+
+    for rect in rects:
+        if rect.color not in bitmaps:
+            bitmaps[rect.color] = np.zeros((height, width), dtype=np.uint8)
+
+        bitmap = bitmaps[rect.color]
+        y1 = rect.y
+        y2 = min(rect.y + rect.height, height)
+        x1 = rect.x
+        x2 = min(rect.x + rect.width, width)
+        bitmap[y1:y2, x1:x2] = 255
+
+    return bitmaps
+
+
+def trace_contour_numpy(
+    bitmap: "np.ndarray",
+) -> List[List[Tuple[int, int]]]:
+    """
+    NumPyを使って高速に境界エッジを収集し、輪郭をトレース
+
+    純Python版のtrace_contour_simpleと同じアルゴリズムだが、
+    NumPyのベクトル演算で高速化。
+
+    Args:
+        bitmap: uint8のNumPy配列（255=塗りつぶし、0=背景）
+
+    Returns:
+        輪郭のリスト [[(x, y), ...], ...]
+    """
+    h, w = bitmap.shape
+    filled = bitmap > 0
+
+    # パディングを追加して境界チェックを簡略化
+    padded = np.pad(filled, 1, mode="constant", constant_values=False)
+
+    # 境界エッジを検出（隣接ピクセルとの差分）
+    # 上辺: 現在のピクセルが塗りつぶしで、上隣が空
+    top_edges = filled & ~padded[:-2, 1:-1]
+    # 下辺: 現在のピクセルが塗りつぶしで、下隣が空
+    bottom_edges = filled & ~padded[2:, 1:-1]
+    # 左辺: 現在のピクセルが塗りつぶしで、左隣が空
+    left_edges = filled & ~padded[1:-1, :-2]
+    # 右辺: 現在のピクセルが塗りつぶしで、右隣が空
+    right_edges = filled & ~padded[1:-1, 2:]
+
+    # エッジをセットに収集
+    edges: set = set()
+
+    # 上辺エッジ
+    ys, xs = np.where(top_edges)
+    for x, y in zip(xs, ys):
+        edges.add(((x, y), (x + 1, y)))
+
+    # 下辺エッジ（逆方向）
+    ys, xs = np.where(bottom_edges)
+    for x, y in zip(xs, ys):
+        edges.add(((x + 1, y + 1), (x, y + 1)))
+
+    # 左辺エッジ（逆方向）
+    ys, xs = np.where(left_edges)
+    for x, y in zip(xs, ys):
+        edges.add(((x, y + 1), (x, y)))
+
+    # 右辺エッジ
+    ys, xs = np.where(right_edges)
+    for x, y in zip(xs, ys):
+        edges.add(((x + 1, y), (x + 1, y + 1)))
+
+    if not edges:
+        return []
+
+    # エッジをチェーン化
+    edge_from_start: Dict[Tuple[int, int], Tuple[Tuple[int, int], Tuple[int, int]]] = {}
+    for edge in edges:
+        start_pt, end_pt = edge
+        edge_from_start[start_pt] = edge
+
+    # 全ての輪郭をトレース
+    all_contours = []
+    used_edges: set = set()
+
+    for start_pt in edge_from_start:
+        if start_pt in used_edges:
+            continue
+
+        # この開始点から輪郭をトレース
+        contour = [start_pt]
+        current_pt = start_pt
+        visited_in_this_contour: set = set()
+
+        max_steps = len(edges) + 1
+        for _ in range(max_steps):
+            if current_pt not in edge_from_start:
+                break
+
+            edge = edge_from_start[current_pt]
+            if edge in visited_in_this_contour:
+                break
+
+            visited_in_this_contour.add(edge)
+            used_edges.add(edge[0])
+            _, end_pt = edge
+            contour.append(end_pt)
+            current_pt = end_pt
+
+            if current_pt == start_pt:
+                break
+
+        if len(contour) < 4:  # 閉じた輪郭には最低4点必要（三角形+戻り）
+            continue
+
+        # 連続する同一方向のエッジを統合（角だけを残す）
+        simplified = [contour[0]]
+        for i in range(1, len(contour) - 1):
+            prev = contour[i - 1]
+            curr = contour[i]
+            next_pt = contour[i + 1]
+
+            dx1 = curr[0] - prev[0]
+            dy1 = curr[1] - prev[1]
+            dx2 = next_pt[0] - curr[0]
+            dy2 = next_pt[1] - curr[1]
+
+            if (dx1, dy1) != (dx2, dy2):
+                simplified.append(curr)
+
+        if len(simplified) >= 3:
+            all_contours.append(simplified)
+
+    return all_contours
+
+
+def find_contours_opencv(
+    bitmap: "np.ndarray", epsilon: float = 1.0
+) -> List[List[Tuple[int, int]]]:
+    """
+    NumPy高速化された境界エッジ収集と輪郭トレース
+
+    trace_contour_numpy()のエッジ上書きバグを修正した版。
+    同じ開始点から複数のエッジが出る場合を正しく処理する。
+
+    Args:
+        bitmap: uint8のNumPy配列（255=塗りつぶし、0=背景）
+        epsilon: 輪郭簡略化の許容誤差（approxPolyDPに渡す）
+
+    Returns:
+        輪郭のリスト [[(x, y), ...], ...]  境界座標
+    """
+    h, w = bitmap.shape
+    filled = bitmap > 0
+
+    # パディングを追加して境界チェックを簡略化
+    padded = np.pad(filled, 1, mode="constant", constant_values=False)
+
+    # 境界エッジを検出（隣接ピクセルとの差分）
+    top_edges = filled & ~padded[:-2, 1:-1]
+    bottom_edges = filled & ~padded[2:, 1:-1]
+    left_edges = filled & ~padded[1:-1, :-2]
+    right_edges = filled & ~padded[1:-1, 2:]
+
+    # エッジをリストに収集（順序付き）
+    # 各エッジは (start_pt, end_pt) のタプル
+    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+
+    # 上辺エッジ: (x, y) → (x+1, y)
+    ys, xs = np.where(top_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x, y), (x + 1, y)))
+
+    # 下辺エッジ: (x+1, y+1) → (x, y+1)
+    ys, xs = np.where(bottom_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x + 1, y + 1), (x, y + 1)))
+
+    # 左辺エッジ: (x, y+1) → (x, y)
+    ys, xs = np.where(left_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x, y + 1), (x, y)))
+
+    # 右辺エッジ: (x+1, y) → (x+1, y+1)
+    ys, xs = np.where(right_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x + 1, y), (x + 1, y + 1)))
+
+    if not edges:
+        return []
+
+    # エッジをチェーン化（複数エッジ対応版）
+    # start_pt → [edge1, edge2, ...] のマッピング
+    from collections import defaultdict
+
+    edge_from_start: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], Tuple[int, int]]]] = defaultdict(list)
+    for edge in edges:
+        start_pt, end_pt = edge
+        edge_from_start[start_pt].append(edge)
+
+    # 全ての輪郭をトレース
+    all_contours = []
+    used_edges: set = set()
+
+    for start_pt_key, edge_list in edge_from_start.items():
+        for initial_edge in edge_list:
+            if initial_edge in used_edges:
+                continue
+
+            # この開始点から輪郭をトレース
+            start_pt = initial_edge[0]
+            contour = [start_pt]
+            current_pt = start_pt
+            current_edge = initial_edge
+
+            max_steps = len(edges) + 1
+            for _ in range(max_steps):
+                used_edges.add(current_edge)
+                _, end_pt = current_edge
+                contour.append(end_pt)
+                current_pt = end_pt
+
+                if current_pt == start_pt:
+                    break
+
+                # 次のエッジを探す
+                next_edges = edge_from_start.get(current_pt, [])
+                next_edge = None
+                for e in next_edges:
+                    if e not in used_edges:
+                        next_edge = e
+                        break
+
+                if next_edge is None:
+                    break
+
+                current_edge = next_edge
+
+            if len(contour) < 4:  # 閉じた輪郭には最低4点必要
+                continue
+
+            # 連続する同一方向のエッジを統合（角だけを残す）
+            simplified = [contour[0]]
+            for i in range(1, len(contour) - 1):
+                prev = contour[i - 1]
+                curr = contour[i]
+                next_pt = contour[i + 1]
+
+                dx1 = curr[0] - prev[0]
+                dy1 = curr[1] - prev[1]
+                dx2 = next_pt[0] - curr[0]
+                dy2 = next_pt[1] - curr[1]
+
+                if (dx1, dy1) != (dx2, dy2):
+                    simplified.append(curr)
+
+            if len(simplified) >= 3:
+                # approxPolyDPで更に簡略化
+                pts_array = np.array(simplified, dtype=np.float32).reshape(-1, 1, 2)
+                approx = cv2.approxPolyDP(pts_array, epsilon, closed=True)
+                final_points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+                if len(final_points) >= 3:
+                    all_contours.append(final_points)
+
+    return all_contours
+
+
+def optimize_svg_opencv(
+    input_path: str,
+    output_path: str,
+    epsilon: float = 1.0,
+) -> dict:
+    """
+    OpenCVを使用した高速版optimize_svg
+
+    Args:
+        input_path: 入力SVGパス（rect群）
+        output_path: 出力SVGパス（path群）
+        epsilon: 輪郭簡略化の許容誤差
+
+    Returns:
+        {"input_rects": N, "output_paths": M, "colors": K}
+    """
+    # 1. SVGパース
+    print(f"SVGをパース中: {input_path}")
+    width, height, rects = parse_svg_rects(input_path)
+    print(f"  サイズ: {width}x{height}, rect数: {len(rects)}")
+
+    # 2. 色ごとにNumPyビットマップ化
+    print("ビットマップに変換中（NumPy）...")
+    bitmaps = rects_to_bitmap_numpy(width, height, rects)
+    print(f"  色数: {len(bitmaps)}")
+
+    # 3. 各色の輪郭を抽出してpath化
+    print("輪郭を抽出中（OpenCV）...")
+    paths = []
+    for i, (color, bitmap) in enumerate(bitmaps.items()):
+        contours = find_contours_opencv(bitmap, epsilon)
+        for contour in contours:
+            path_str = contour_to_svg_path(contour, color)
+            if path_str:
+                paths.append(path_str)
+
+        # 進捗表示（色が多い場合）
+        if len(bitmaps) > 10 and (i + 1) % 10 == 0:
+            print(f"    {i + 1}/{len(bitmaps)} 色処理完了")
+
+    print(f"  path数: {len(paths)}")
+
+    # 4. SVG出力
+    svg_content = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n'
+    svg_content += "\n".join(paths)
+    svg_content += "\n</svg>"
+
+    Path(output_path).write_text(svg_content, encoding="utf-8")
+    print(f"出力: {output_path}")
+
+    return {
+        "input_rects": len(rects),
+        "output_paths": len(paths),
+        "colors": len(bitmaps),
+    }
+
+
+# =============================================================================
+# 純Python版（フォールバック）
+# =============================================================================
 
 
 def trace_contour_simple(
@@ -412,13 +768,13 @@ def contour_to_svg_path(points: List[Tuple[int, int]], color: str) -> str:
     return f'<path d="{d}" fill="{color}"/>'
 
 
-def optimize_svg(
+def optimize_svg_pure(
     input_path: str,
     output_path: str,
     epsilon: float = 1.0,
 ) -> dict:
     """
-    rect群SVGをポリゴンpath SVGに最適化
+    純Python版optimize_svg（フォールバック用）
 
     Args:
         input_path: 入力SVGパス（rect群）
@@ -434,20 +790,24 @@ def optimize_svg(
     print(f"  サイズ: {width}x{height}, rect数: {len(rects)}")
 
     # 2. 色ごとにビットマップ化
-    print("ビットマップに変換中...")
+    print("ビットマップに変換中（純Python）...")
     bitmaps = rects_to_bitmap(width, height, rects)
     print(f"  色数: {len(bitmaps)}")
 
     # 3. 各色の連結成分を検出してpath化
-    print("輪郭を抽出中...")
+    print("輪郭を抽出中（純Python - 大きなSVGでは時間がかかります）...")
     paths = []
-    for color, bitmap in bitmaps.items():
+    for i, (color, bitmap) in enumerate(bitmaps.items()):
         components = find_connected_components(bitmap)
         for contour in components:
             simplified = simplify_contour(contour, epsilon)
             path_str = contour_to_svg_path(simplified, color)
             if path_str:
                 paths.append(path_str)
+
+        # 進捗表示
+        if len(bitmaps) > 5:
+            print(f"    {i + 1}/{len(bitmaps)} 色処理完了")
 
     print(f"  path数: {len(paths)}")
 
@@ -464,6 +824,34 @@ def optimize_svg(
         "output_paths": len(paths),
         "colors": len(bitmaps),
     }
+
+
+def optimize_svg(
+    input_path: str,
+    output_path: str,
+    epsilon: float = 1.0,
+) -> dict:
+    """
+    rect群SVGをポリゴンpath SVGに最適化
+
+    OpenCVが利用可能な場合は高速版を使用、
+    そうでない場合は純Python版にフォールバック。
+
+    Args:
+        input_path: 入力SVGパス（rect群）
+        output_path: 出力SVGパス（path群）
+        epsilon: 輪郭簡略化の許容誤差
+
+    Returns:
+        {"input_rects": N, "output_paths": M, "colors": K}
+    """
+    if _OPENCV_AVAILABLE:
+        print("OpenCV版を使用（高速）")
+        return optimize_svg_opencv(input_path, output_path, epsilon)
+    else:
+        print("警告: OpenCVが見つかりません。純Python版を使用（低速）")
+        print("  高速化するには: pip install opencv-python numpy")
+        return optimize_svg_pure(input_path, output_path, epsilon)
 
 
 def main() -> None:
