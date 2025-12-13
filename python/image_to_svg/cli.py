@@ -146,7 +146,7 @@ def main() -> None:
                 temp_fd, temp_png_path = tempfile.mkstemp(suffix="_reduced.png")
                 os.close(temp_fd)
 
-                # k-meansで色削減（converterのインポートを避けて直接実装）
+                # k-meansで色削減（ユニーク色ベースで同一色を保持）
                 img = cv2.imread(args.input)
                 if img is None:
                     raise ValueError(f"画像を読み込めません: {args.input}")
@@ -154,50 +154,73 @@ def main() -> None:
                 h, w = img.shape[:2]
                 pixels = img.reshape(-1, 3)
 
-                # LAB色空間でK-means
-                lab_img = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-                pixels_lab = lab_img.reshape(-1, 3).astype(np.float32)
-
-                # クラスタ数を画像サイズに応じて調整（ピクセル数より多くできない）
-                num_pixels = len(pixels_lab)
-                num_colors = min(args.colors, num_pixels)
-                if num_colors < args.colors:
-                    print(f"  注意: ピクセル数({num_pixels})が目標色数より少ないため、{num_colors}色に調整")
-
-                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-                _, labels, _ = cv2.kmeans(
-                    pixels_lab,
-                    num_colors,
-                    None,
-                    criteria,
-                    10,
-                    cv2.KMEANS_PP_CENTERS,
+                # ユニーク色を抽出（出現頻度付き）
+                unique_colors_bgr, inverse_indices, counts = np.unique(
+                    pixels, axis=0, return_inverse=True, return_counts=True
                 )
-                labels_flat = labels.flatten()
+                num_unique = len(unique_colors_bgr)
+                print(f"  元のユニーク色数: {num_unique}")
 
-                # 各クラスタの代表色を元画像の最頻色から選択
-                representative_colors = np.zeros((num_colors, 3), dtype=np.uint8)
-                for cluster_id in range(num_colors):
-                    mask = labels_flat == cluster_id
-                    if not np.any(mask):
-                        continue
-                    cluster_pixels = pixels[mask]
-                    unique, counts = np.unique(cluster_pixels, axis=0, return_counts=True)
-                    representative_colors[cluster_id] = unique[np.argmax(counts)]
+                # ユニーク色をLAB色空間に変換
+                unique_colors_lab = cv2.cvtColor(
+                    unique_colors_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB
+                ).reshape(-1, 3).astype(np.float32)
 
-                # 量子化画像を生成
-                quantized_pixels = representative_colors[labels_flat]
-                quantized_img = quantized_pixels.reshape(h, w, 3).astype(np.uint8)
+                # クラスタ数を調整（ユニーク色数より多くできない）
+                num_colors = min(args.colors, num_unique)
+                if num_colors < args.colors:
+                    print(f"  注意: ユニーク色数({num_unique})が目標色数より少ないため、{num_colors}色に調整")
 
-                unique_colors_kmeans = np.unique(quantized_pixels, axis=0)
-                print(f"  k-means後: {len(unique_colors_kmeans)}色")
+                # 重み付きk-meansは標準cv2にないため、
+                # 代わりに各ユニーク色を出現頻度に応じてサンプリングしてk-meansを実行
+                # ただし、ユニーク色が少ない場合はそのまま使用
+                if num_unique <= num_colors:
+                    # ユニーク色数が目標以下なら削減不要
+                    print(f"  ユニーク色数が目標以下のため色削減をスキップ")
+                    quantized_img = img.copy()
+                else:
+                    # ユニーク色に対してk-meansを実行
+                    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+                    _, labels, centers = cv2.kmeans(
+                        unique_colors_lab,
+                        num_colors,
+                        None,
+                        criteria,
+                        10,
+                        cv2.KMEANS_PP_CENTERS,
+                    )
+                    labels_flat = labels.flatten()
+
+                    # 各クラスタの代表色を、そのクラスタ内で最頻のユニーク色から選択
+                    representative_colors = np.zeros((num_colors, 3), dtype=np.uint8)
+                    for cluster_id in range(num_colors):
+                        mask = labels_flat == cluster_id
+                        if not np.any(mask):
+                            continue
+                        # このクラスタに属するユニーク色のインデックス
+                        cluster_unique_indices = np.where(mask)[0]
+                        # 各ユニーク色の出現頻度を取得
+                        cluster_counts = counts[cluster_unique_indices]
+                        # 最頻のユニーク色を代表色として選択
+                        most_frequent_idx = cluster_unique_indices[np.argmax(cluster_counts)]
+                        representative_colors[cluster_id] = unique_colors_bgr[most_frequent_idx]
+
+                    # 各ピクセルを対応するユニーク色のクラスタ代表色にマッピング
+                    # inverse_indices: 各ピクセル → ユニーク色インデックス
+                    # labels_flat: 各ユニーク色 → クラスタID
+                    pixel_cluster_ids = labels_flat[inverse_indices]
+                    quantized_pixels = representative_colors[pixel_cluster_ids]
+                    quantized_img = quantized_pixels.reshape(h, w, 3).astype(np.uint8)
+
+                    unique_colors_kmeans = np.unique(quantized_pixels, axis=0)
+                    print(f"  k-means後: {len(unique_colors_kmeans)}色")
 
                 # 類似色マージ（LAB色空間）
                 merged = _merge_similar_colors_internal(quantized_img, threshold=10.0)
 
                 # 最終色数をカウント
-                unique_colors = np.unique(merged.reshape(-1, 3), axis=0)
-                print(f"  マージ後: {len(unique_colors)}色")
+                unique_colors_final = np.unique(merged.reshape(-1, 3), axis=0)
+                print(f"  マージ後: {len(unique_colors_final)}色")
 
                 # 保存
                 merged_rgb = cv2.cvtColor(merged, cv2.COLOR_BGR2RGB)
