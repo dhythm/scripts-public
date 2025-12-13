@@ -73,6 +73,57 @@ def rgb_to_css(rgb: Sequence[int]) -> str:
     return f"rgb({r},{g},{b})"
 
 
+def merge_vertical_runs(
+    runs: List[Tuple[int, int, int, int, Tuple[int, int, int]]]
+) -> List[Tuple[int, int, int, int, Tuple[int, int, int]]]:
+    """
+    横runを縦方向にマージして大きな矩形を生成
+
+    同じx座標・幅・色を持つ横runで、y座標が連続するものを1つの矩形にまとめる。
+
+    Args:
+        runs: [(x, y, w, h, (r,g,b)), ...]  # h=1の横run
+
+    Returns:
+        [(x, y, w, h, (r,g,b)), ...]  # マージ後の矩形
+    """
+    if not runs:
+        return []
+
+    # (x, w, color) をキーにしてrunをグループ化
+    from collections import defaultdict
+
+    groups: dict[Tuple[int, int, Tuple[int, int, int]], List[int]] = defaultdict(list)
+    for x, y, w, h, color in runs:
+        key = (x, w, color)
+        groups[key].append(y)
+
+    result: List[Tuple[int, int, int, int, Tuple[int, int, int]]] = []
+
+    for (x, w, color), y_list in groups.items():
+        # yでソート
+        y_list.sort()
+
+        # 連続するyをマージ
+        start_y = y_list[0]
+        end_y = y_list[0]
+
+        for y in y_list[1:]:
+            if y == end_y + 1:
+                # 連続している
+                end_y = y
+            else:
+                # 連続が途切れた → 矩形を出力
+                result.append((x, start_y, w, end_y - start_y + 1, color))
+                start_y = y
+                end_y = y
+
+        # 最後のグループを出力
+        result.append((x, start_y, w, end_y - start_y + 1, color))
+
+    return result
+
+
 def iter_horizontal_runs(
     img: Image.Image,
     bbox: Tuple[int, int, int, int],
@@ -107,11 +158,21 @@ def emit_pixel_rects_as_svg(
     img: Image.Image,
     bbox: Tuple[int, int, int, int],
     merge_runs: bool = True,
+    merge_vertical: bool = True,
 ) -> Iterable[str]:
-    """クロップ領域をrect列に変換したSVG断片を返す。"""
+    """クロップ領域をrect列に変換したSVG断片を返す。
 
+    Args:
+        img: PIL Image
+        bbox: (x0, y0, x1, y1)
+        merge_runs: 横方向の同色runをマージするか
+        merge_vertical: 縦方向の隣接矩形もマージするか（merge_runs=Trueの場合のみ有効）
+    """
     if merge_runs:
-        iterator = iter_horizontal_runs(img, bbox)
+        runs = list(iter_horizontal_runs(img, bbox))
+        if merge_vertical:
+            runs = merge_vertical_runs(runs)
+        iterator = iter(runs)
     else:
         x0, y0, x1, y1 = bbox
         iterator = (
@@ -193,6 +254,7 @@ def build_svg(
     img: Image.Image,
     layout: Layout,
     merge_runs: bool = True,
+    merge_vertical: bool = True,
 ) -> str:
     w = layout.width or img.width
     h = layout.height or img.height
@@ -212,7 +274,7 @@ def build_svg(
 
     for name, bbox in layout.icon_bboxes:
         parts.append(f"<!-- {name}: bbox={bbox} -->")
-        parts.extend(emit_pixel_rects_as_svg(img, bbox, merge_runs=merge_runs))
+        parts.extend(emit_pixel_rects_as_svg(img, bbox, merge_runs=merge_runs, merge_vertical=merge_vertical))
 
     for t in layout.texts:
         parts.append(
@@ -231,6 +293,7 @@ def save_svg_from_png(
     output_path: str,
     config_path: str | None = None,
     merge_runs: bool = True,
+    merge_vertical: bool = True,
 ) -> None:
     img = Image.open(input_path).convert("RGB")
     layout = load_layout(config_path, img.size)
@@ -241,7 +304,7 @@ def save_svg_from_png(
         if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
             raise ValueError(f"bboxが画像サイズを超えています: {name}={x0, y0, x1, y1}, image={w}x{h}")
 
-    svg_content = build_svg(img, layout, merge_runs=merge_runs)
+    svg_content = build_svg(img, layout, merge_runs=merge_runs, merge_vertical=merge_vertical)
     Path(output_path).write_text(svg_content, encoding="utf-8")
 
 
