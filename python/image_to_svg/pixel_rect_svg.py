@@ -53,79 +53,17 @@ class Layout:
     texts: List[TextSpec]
 
 
-# サンプル画像向けデフォルトレイアウト -------------------------------------------------
-def _default_texts() -> List[TextSpec]:
-    return [
-        TextSpec(688.0, 65.5, "業績予測とバリュエーション (2025-2027)", 48),
-        TextSpec(446.5, 348.5, "支える", 32),
-        TextSpec(924.0, 419.0, "展望", 32),
-        TextSpec(207.0, 234.5, "高成長と収益性", 34),
-        TextSpec(207.0, 473.0, "売上成長率 〜30%", 24),
-        TextSpec(207.0, 510.5, "粗利率 80%超", 24),
-        TextSpec(207.0, 547.0, "営業利益率 40%超", 24),
-        TextSpec(207.0, 583.5, "FCF 〜10億ドル", 24),
-        TextSpec(688.0, 234.5, "高い市場評価", 34),
-        TextSpec(687.5, 472.5, "予想PER 高水準", 24),
-        TextSpec(687.5, 510.0, "（例:186倍）", 24),
-        TextSpec(687.5, 546.0, "時価総額 急上昇", 24),
-        TextSpec(687.5, 583.5, "AIブームの追い風", 24),
-        TextSpec(1167.5, 149.5, "強気シナリオ", 34),
-        TextSpec(1168.5, 306.0, "成長持続 (AI・政府需要)", 24),
-        TextSpec(1168.5, 343.0, "株価上昇余地", 24),
-        TextSpec(1168.5, 378.5, "新契約への期待", 24),
-        TextSpec(1167.5, 475.5, "保守的シナリオ", 34),
-        TextSpec(1168.0, 631.5, "成長鈍化リスク", 24),
-        TextSpec(1168.0, 667.0, "株価調整・PER圧縮", 24),
-        TextSpec(1168.0, 704.0, "規制・支出削減の影響", 24),
-    ]
-
-
-def _default_layout(width: int, height: int) -> Layout:
-    icon_bboxes = [
-        ("left_icon", (80, 282, 330, 430)),
-        ("mid_icon", (564, 278, 818, 420)),
-        ("right_top_icon", (1070, 185, 1266, 275)),
-        ("right_bottom_icon", (1040, 515, 1291, 594)),
-    ]
-
-    defs = [
-        '<linearGradient id="boxGradGrey" x1="0" y1="0" x2="1" y2="1">\n'
-        '    <stop offset="0%" stop-color="rgb(245,249,252)"/>\n'
-        '    <stop offset="100%" stop-color="rgb(233,239,244)"/>\n'
-        "  </linearGradient>",
-        '<linearGradient id="boxGradBeige" x1="0" y1="0" x2="1" y2="1">\n'
-        '    <stop offset="0%" stop-color="rgb(254,244,235)"/>\n'
-        '    <stop offset="100%" stop-color="rgb(249,234,220)"/>\n'
-        "  </linearGradient>",
-        '<linearGradient id="midStroke" x1="0" y1="0" x2="1" y2="0">\n'
-        '    <stop offset="0%" stop-color="#41689E"/>\n'
-        '    <stop offset="100%" stop-color="#ED8440"/>\n'
-        "  </linearGradient>",
-    ]
-
-    primitives = [
-        '<rect x="0" y="0" width="100%" height="100%" fill="white"/>',
-        '<path d="M 374.0,398.5 L 466.0,402.5 L 468.0,381.5 L 514.5,418.0 L 468.0,455.5 L 467.0,436.5 L 374.0,437.5 Z" fill="#3C69AC"/>',
-        '<path d="M 857.0,389.5 L 857.5,348.0 L 946.0,292.5 L 938.5,277.0 L 940.0,274.5 L 995.5,280.0 L 976.0,335.5 L 965.0,320.5 Z" fill="#3C69AC"/>',
-        '<path d="M 860.0,450.5 L 965.0,517.5 L 977.0,503.5 L 996.5,560.0 L 940.0,564.5 L 937.5,563.0 L 946.0,547.5 L 860.0,492.5 Z" fill="#EB863E"/>',
-        '<rect x="40" y="190" width="334" height="456" rx="18" ry="18" fill="url(#boxGradGrey)" stroke="#41689E" stroke-width="6" stroke-linejoin="round"/>',
-        '<rect x="521" y="190" width="334" height="456" rx="18" ry="18" fill="url(#boxGradGrey)" stroke="url(#midStroke)" stroke-width="6" stroke-linejoin="round"/>',
-        '<rect x="1002" y="109" width="334" height="303" rx="18" ry="18" fill="url(#boxGradGrey)" stroke="#41689E" stroke-width="6" stroke-linejoin="round"/>',
-        '<rect x="1002" y="435" width="334" height="302" rx="18" ry="18" fill="url(#boxGradBeige)" stroke="#ED8440" stroke-width="6" stroke-linejoin="round"/>',
-    ]
-
+# シンプルなデフォルトレイアウト（全体をcrop_pixelsで貼るだけ）
+def _full_image_layout(width: int, height: int) -> Layout:
     return Layout(
         width=width,
         height=height,
-        font_family=(
-            "Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, "
-            "Meiryo, sans-serif"
-        ),
+        font_family="Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif",
         background=None,
-        defs=defs,
-        primitives=primitives,
-        icon_bboxes=icon_bboxes,
-        texts=_default_texts(),
+        defs=[],
+        primitives=['<rect x="0" y="0" width="100%" height="100%" fill="white"/>'],
+        icon_bboxes=[("full_image", (0, 0, width, height))],
+        texts=[],
     )
 
 
@@ -243,7 +181,8 @@ def _layout_from_dict(data: dict, width: int, height: int) -> Layout:
 
 def load_layout(config_path: str | None, image_size: Tuple[int, int]) -> Layout:
     if config_path is None:
-        return _default_layout(*image_size)
+        # レイアウト未指定時は、画像全体を1枚のcrop_pixelsとして扱う最小構成
+        return _full_image_layout(*image_size)
 
     path = Path(config_path)
     data = _load_config(path)
