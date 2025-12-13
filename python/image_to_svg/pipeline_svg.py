@@ -10,7 +10,7 @@
   python -m image_to_svg.pipeline_svg compose --layout layout.json --input input.png --output build/output.svg --patch patch.json
 
 前提: layout.json の各要素に id を付けると、patchやGUIでの編集が楽になります。
-依存: Pillow (uv sync 済みなら入っています)。
+依存: Pillow (uv sync 済みなら入っています)。layout.json が無い場合は画像全体をrect化するフォールバックで動作します。
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
 from PIL import Image
+from .pixel_rect_svg import save_svg_from_png
 
 
 # ---------------------------------------------------------------------------#
@@ -189,6 +190,12 @@ def compose_svg(
     output_svg: str,
     patch_path: Optional[str],
 ) -> None:
+    # layout が無い場合のフォールバック: 画像全体をrect化してSVG化
+    if not layout_path or not Path(layout_path).exists():
+        Path(output_svg).parent.mkdir(parents=True, exist_ok=True)
+        save_svg_from_png(input_png, output_svg, config_path=None, merge_runs=True)
+        return
+
     layout = load_json(layout_path)
     patch = load_json(patch_path) if patch_path else None
     layout = apply_patch(layout, patch)
@@ -298,7 +305,7 @@ def main() -> None:
     ap_e.add_argument("--input", required=True)
 
     ap_c = sub.add_parser("compose", help="layout.json(+patch)からSVGを合成")
-    ap_c.add_argument("--layout", required=True)
+    ap_c.add_argument("--layout", required=False, help="省略時は画像全体をrect化するフォールバック")
     ap_c.add_argument("--input", required=True)
     ap_c.add_argument("--output", required=True)
     ap_c.add_argument("--patch", default=None)
