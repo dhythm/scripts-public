@@ -74,6 +74,44 @@ def pick_background_label(counts: np.ndarray) -> int:
     return int(np.argmax(counts))  # 最頻色を背景とみなす
 
 
+def merge_dark_clusters(
+    labels: np.ndarray,
+    centers_bgr: np.ndarray,
+    counts: np.ndarray,
+    bg_label: int,
+    luma_threshold: float = 60.0,
+    bg_luma_skip: float = 80.0,
+) -> Tuple[np.ndarray, np.ndarray, bool, float]:
+    """暗いクラスタを最暗クラスタへ統合し、黒周りの分裂を抑える。
+
+    背景が暗い場合は副作用を避けるためスキップする。
+    戻り値: (新labels, 新counts, 適用したか, 背景輝度)
+    """
+
+    centers_rgb = centers_bgr[:, ::-1].astype(np.float32)
+    r, g, b = centers_rgb[:, 0], centers_rgb[:, 1], centers_rgb[:, 2]
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    bg_luma = float(luma[bg_label])
+
+    # 暗背景では統合を行わない
+    if bg_luma < bg_luma_skip:
+        return labels, counts, False, bg_luma
+
+    black_idx = int(np.argmin(luma))
+    dark_mask = luma < luma_threshold
+
+    # 暗色が1色のみなら何もしない
+    if int(np.count_nonzero(dark_mask)) <= 1:
+        return labels, counts, False, bg_luma
+
+    mapping = np.arange(len(centers_bgr), dtype=np.int32)
+    mapping[dark_mask] = black_idx
+
+    merged_labels = mapping[labels]
+    merged_counts = np.bincount(merged_labels.reshape(-1), minlength=len(counts)).astype(np.int64)
+    return merged_labels.astype(np.int32), merged_counts, True, bg_luma
+
+
 # -----------------------------------------------------------------------------
 # マスク処理・輪郭抽出
 # -----------------------------------------------------------------------------
@@ -142,6 +180,16 @@ def auto_vectorize(
     bg_bgr = centers_bgr[bg_label]
     bg_rgb = (int(bg_bgr[2]), int(bg_bgr[1]), int(bg_bgr[0]))
 
+    # 黒周辺の分裂を抑えるため暗色クラスタを統合（背景が暗すぎる場合はスキップ）
+    labels, counts, merged_dark, bg_luma = merge_dark_clusters(
+        labels, centers_bgr, counts, bg_label, luma_threshold=60.0, bg_luma_skip=80.0
+    )
+    if merged_dark:
+        # 統合後も背景ラベルは最頻色で再決定しておく（まれに変わるため）
+        bg_label = pick_background_label(counts)
+        bg_bgr = centers_bgr[bg_label]
+        bg_rgb = (int(bg_bgr[2]), int(bg_bgr[1]), int(bg_bgr[0]))
+
     # 前景マスク
     fg = (labels != bg_label).astype(np.uint8) * 255
     num_cc, cc_map, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
@@ -169,6 +217,8 @@ def auto_vectorize(
             "denoise": denoise,
             "background_label": bg_label,
             "background_rgb": list(bg_rgb),
+            "background_luma": bg_luma,
+            "dark_merge_applied": merged_dark,
             "palette": [{"idx": p.idx, "rgb": list(p.rgb), "count": p.count} for p in palette],
             "components": comps,
         }

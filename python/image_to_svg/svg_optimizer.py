@@ -285,48 +285,53 @@ def trace_contour_numpy(
     return all_contours
 
 
-def find_contours_opencv(
-    bitmap: "np.ndarray", epsilon: float = 1.0
-) -> List[List[Tuple[int, int]]]:
+def bitmap_to_compound_paths(
+    bitmap: "np.ndarray",
+    color: str,
+    epsilon: float = 1.0,
+    min_area: float = 2.0,
+) -> List[str]:
     """
-    OpenCVのfindContoursを使用した輪郭検出
+    RETR_CCOMP で外周と穴の階層を取り、外周+穴を1 path(evenodd)にまとめて返す
 
     ビットマップを2倍にスケールしてからfindContoursを実行し、
     座標を1/2に戻すことでピクセル境界座標を正確に取得する。
 
     Args:
         bitmap: uint8のNumPy配列（255=塗りつぶし、0=背景）
+        color: 塗りつぶし色（CSS形式）
         epsilon: 輪郭簡略化の許容誤差（approxPolyDPに渡す）
+        min_area: 最小面積（これより小さい輪郭はノイズとして除去）
 
     Returns:
-        輪郭のリスト [[(x, y), ...], ...]  境界座標
+        SVG path要素のリスト
     """
     h, w = bitmap.shape
 
     # ビットマップを2倍にスケール（境界座標を正確に取得するため）
-    # INTER_NEAREST でピクセルの境界を保持
-    scaled = cv2.resize(
-        bitmap,
-        (w * 2, h * 2),
-        interpolation=cv2.INTER_NEAREST
-    )
+    scaled = cv2.resize(bitmap, (w * 2, h * 2), interpolation=cv2.INTER_NEAREST)
 
-    # 輪郭検出（RETR_TREE: 穴も含めた階層構造を取得）
+    # 輪郭検出（RETR_CCOMP: 2階層の階層構造を取得 - 外周と穴）
     contours, hierarchy = cv2.findContours(
-        scaled, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        scaled, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    result = []
-    for contour in contours:
-        if len(contour) < 3:
-            continue
+    if hierarchy is None or len(contours) == 0:
+        return []
+
+    hierarchy = hierarchy[0]  # shape: (N, 4) - [next, prev, child, parent]
+
+    def contour_to_d(cnt: "np.ndarray") -> str:
+        """輪郭をSVG path の d 属性の部分文字列に変換"""
+        if cnt is None or len(cnt) < 3:
+            return ""
 
         # approxPolyDPで簡略化（スケール分を考慮してepsilon*2）
-        approx = cv2.approxPolyDP(contour, epsilon * 2, closed=True)
+        approx = cv2.approxPolyDP(cnt, epsilon * 2, closed=True)
+        if approx is None or len(approx) < 3:
+            return ""
 
         # 座標を1/2に戻してピクセル境界座標に変換
-        # 2倍スケールでは、ピクセル境界が偶数座標になる
-        # OpenCVの輪郭座標を境界座標に変換: round((coord + 1) / 2)
         points = [(round((pt[0][0] + 1) / 2), round((pt[0][1] + 1) / 2)) for pt in approx]
 
         # 重複点を除去
@@ -334,12 +339,48 @@ def find_contours_opencv(
         for pt in points:
             if not unique_points or pt != unique_points[-1]:
                 unique_points.append(pt)
-        # 最後と最初が同じなら除去
         if len(unique_points) > 1 and unique_points[-1] == unique_points[0]:
             unique_points = unique_points[:-1]
 
-        if len(unique_points) >= 3:
-            result.append(unique_points)
+        if len(unique_points) < 3:
+            return ""
+
+        d = f"M {unique_points[0][0]} {unique_points[0][1]}"
+        for x, y in unique_points[1:]:
+            d += f" L {x} {y}"
+        d += " Z"
+        return d
+
+    result: List[str] = []
+
+    for i, h_entry in enumerate(hierarchy):
+        parent = h_entry[3]
+        if parent != -1:
+            continue  # 穴側は親から辿るのでスキップ
+
+        # 小さすぎる外周はノイズとして捨てる
+        # 面積は2倍スケールなので4倍になっている
+        if abs(cv2.contourArea(contours[i])) < min_area * 4:
+            continue
+
+        d_parts = []
+        d_outer = contour_to_d(contours[i])
+        if not d_outer:
+            continue
+        d_parts.append(d_outer)
+
+        # 穴（子）を追加
+        child = h_entry[2]
+        while child != -1:
+            # 小さすぎる穴は無視（ノイズ穴対策）
+            if abs(cv2.contourArea(contours[child])) >= min_area * 4:
+                d_hole = contour_to_d(contours[child])
+                if d_hole:
+                    d_parts.append(d_hole)
+            child = hierarchy[child][0]  # 次の穴（兄弟）
+
+        d_all = " ".join(d_parts)
+        result.append(f'<path d="{d_all}" fill="{color}" fill-rule="evenodd"/>')
 
     return result
 
@@ -370,15 +411,11 @@ def optimize_svg_opencv(
     bitmaps = rects_to_bitmap_numpy(width, height, rects)
     print(f"  色数: {len(bitmaps)}")
 
-    # 3. 各色の輪郭を抽出してpath化
+    # 3. 各色の輪郭を抽出してpath化（穴対応の複合パス）
     print("輪郭を抽出中（OpenCV）...")
     paths = []
     for i, (color, bitmap) in enumerate(bitmaps.items()):
-        contours = find_contours_opencv(bitmap, epsilon)
-        for contour in contours:
-            path_str = contour_to_svg_path(contour, color)
-            if path_str:
-                paths.append(path_str)
+        paths.extend(bitmap_to_compound_paths(bitmap, color, epsilon=epsilon))
 
         # 進捗表示（色が多い場合）
         if len(bitmaps) > 10 and (i + 1) % 10 == 0:
