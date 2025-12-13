@@ -114,6 +114,18 @@ def main() -> None:
             action="store_true",
             help="前処理で生成した一時PNGを保持（--preprocess時）",
         )
+        pr.add_argument(
+            "--color-merge",
+            type=float,
+            default=10.0,
+            help="類似色マージ閾値（LAB色空間、デフォルト10.0）",
+        )
+        pr.add_argument(
+            "--width-tolerance",
+            type=int,
+            default=0,
+            help="縦マージ時の幅許容差（デフォルト0=厳密一致、1以上でグリーディマージ）",
+        )
         args = pr.parse_args(argv)
 
         if not Path(args.input).exists():
@@ -216,7 +228,7 @@ def main() -> None:
                     print(f"  k-means後: {len(unique_colors_kmeans)}色")
 
                 # 類似色マージ（LAB色空間）
-                merged = _merge_similar_colors_internal(quantized_img, threshold=10.0)
+                merged = _merge_similar_colors_internal(quantized_img, threshold=args.color_merge)
 
                 # 最終色数をカウント
                 unique_colors_final = np.unique(merged.reshape(-1, 3), axis=0)
@@ -234,6 +246,7 @@ def main() -> None:
                 config_path=args.config,
                 merge_runs=not args.no_merge_runs,
                 merge_vertical=not args.no_merge_vertical,
+                width_tolerance=args.width_tolerance,
             )
             print(f"完了: {output}")
 
