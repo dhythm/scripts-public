@@ -124,103 +124,6 @@ def merge_vertical_runs(
     return result
 
 
-def merge_vertical_runs_greedy(
-    runs: List[Tuple[int, int, int, int, Tuple[int, int, int]]],
-    width_tolerance: int = 0,
-) -> List[Tuple[int, int, int, int, Tuple[int, int, int]]]:
-    """
-    縦方向グリーディマージ（幅の許容差付き）
-
-    同じx座標・色を持ち、幅の差がwidth_tolerance以内の横runを縦方向にマージする。
-    マージ時は共通部分（狭い方の幅）を使用し、はみ出し部分は別rectとして残す。
-
-    Args:
-        runs: [(x, y, w, h, (r,g,b)), ...]  # h=1の横run
-        width_tolerance: 幅の許容差（デフォルト0=完全一致のみ）
-
-    Returns:
-        [(x, y, w, h, (r,g,b)), ...]  # マージ後の矩形
-    """
-    if not runs or width_tolerance == 0:
-        # tolerance=0の場合は既存の厳密マージを使用
-        return merge_vertical_runs(runs)
-
-    from collections import defaultdict
-
-    # yでソートし、行ごとに処理
-    runs_by_y: dict[int, List[Tuple[int, int, int, int, Tuple[int, int, int]]]] = defaultdict(list)
-    for run in runs:
-        x, y, w, h, color = run
-        runs_by_y[y].append(run)
-
-    y_values = sorted(runs_by_y.keys())
-    if not y_values:
-        return []
-
-    # アクティブな矩形を管理: キー=(x, color), 値=(start_y, current_w, min_w)
-    # min_wを追跡して、最終的な矩形幅を決定
-    active_rects: dict[Tuple[int, Tuple[int, int, int]], Tuple[int, int, int, int]] = {}
-    # active_rects[key] = (start_y, last_y, current_w, min_w)
-
-    result: List[Tuple[int, int, int, int, Tuple[int, int, int]]] = []
-    remainder: List[Tuple[int, int, int, int, Tuple[int, int, int]]] = []
-
-    for y in y_values:
-        current_runs = runs_by_y[y]
-        matched_keys = set()
-
-        for x, _, w, _, color in current_runs:
-            key = (x, color)
-
-            if key in active_rects:
-                start_y, last_y, active_w, min_w = active_rects[key]
-
-                # 幅の差をチェック
-                if abs(w - active_w) <= width_tolerance and y == last_y + 1:
-                    # マージ可能: 続ける
-                    new_min_w = min(min_w, w)
-                    active_rects[key] = (start_y, y, w, new_min_w)
-                    matched_keys.add(key)
-
-                    # はみ出し部分を余りとして記録
-                    if w > new_min_w:
-                        # 現在の行ではみ出し
-                        remainder.append((x + new_min_w, y, w - new_min_w, 1, color))
-                else:
-                    # マージ不可: 既存を出力して新規開始
-                    final_w = min_w
-                    result.append((x, start_y, final_w, last_y - start_y + 1, color))
-                    active_rects[key] = (y, y, w, w)
-                    matched_keys.add(key)
-            else:
-                # 新規開始
-                active_rects[key] = (y, y, w, w)
-                matched_keys.add(key)
-
-        # マッチしなかったアクティブ矩形を出力
-        keys_to_remove = []
-        for key, (start_y, last_y, active_w, min_w) in active_rects.items():
-            if key not in matched_keys:
-                x, color = key
-                result.append((x, start_y, min_w, last_y - start_y + 1, color))
-                keys_to_remove.append(key)
-
-        for key in keys_to_remove:
-            del active_rects[key]
-
-    # 残りのアクティブ矩形を出力
-    for key, (start_y, last_y, active_w, min_w) in active_rects.items():
-        x, color = key
-        result.append((x, start_y, min_w, last_y - start_y + 1, color))
-
-    # 余り（はみ出し部分）を再帰的にマージ
-    if remainder:
-        merged_remainder = merge_vertical_runs(remainder)
-        result.extend(merged_remainder)
-
-    return result
-
-
 def iter_horizontal_runs(
     img: Image.Image,
     bbox: Tuple[int, int, int, int],
@@ -256,7 +159,6 @@ def emit_pixel_rects_as_svg(
     bbox: Tuple[int, int, int, int],
     merge_runs: bool = True,
     merge_vertical: bool = True,
-    width_tolerance: int = 0,
 ) -> Iterable[str]:
     """クロップ領域をrect列に変換したSVG断片を返す。
 
@@ -265,12 +167,11 @@ def emit_pixel_rects_as_svg(
         bbox: (x0, y0, x1, y1)
         merge_runs: 横方向の同色runをマージするか
         merge_vertical: 縦方向の隣接矩形もマージするか（merge_runs=Trueの場合のみ有効）
-        width_tolerance: 縦マージ時の幅の許容差（0=厳密一致、1以上=グリーディマージ）
     """
     if merge_runs:
         runs = list(iter_horizontal_runs(img, bbox))
         if merge_vertical:
-            runs = merge_vertical_runs_greedy(runs, width_tolerance=width_tolerance)
+            runs = merge_vertical_runs(runs)
         iterator = iter(runs)
     else:
         x0, y0, x1, y1 = bbox
@@ -354,7 +255,6 @@ def build_svg(
     layout: Layout,
     merge_runs: bool = True,
     merge_vertical: bool = True,
-    width_tolerance: int = 0,
 ) -> str:
     w = layout.width or img.width
     h = layout.height or img.height
@@ -374,7 +274,7 @@ def build_svg(
 
     for name, bbox in layout.icon_bboxes:
         parts.append(f"<!-- {name}: bbox={bbox} -->")
-        parts.extend(emit_pixel_rects_as_svg(img, bbox, merge_runs=merge_runs, merge_vertical=merge_vertical, width_tolerance=width_tolerance))
+        parts.extend(emit_pixel_rects_as_svg(img, bbox, merge_runs=merge_runs, merge_vertical=merge_vertical))
 
     for t in layout.texts:
         parts.append(
@@ -394,7 +294,6 @@ def save_svg_from_png(
     config_path: str | None = None,
     merge_runs: bool = True,
     merge_vertical: bool = True,
-    width_tolerance: int = 0,
 ) -> None:
     img = Image.open(input_path).convert("RGB")
     layout = load_layout(config_path, img.size)
@@ -405,7 +304,7 @@ def save_svg_from_png(
         if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
             raise ValueError(f"bboxが画像サイズを超えています: {name}={x0, y0, x1, y1}, image={w}x{h}")
 
-    svg_content = build_svg(img, layout, merge_runs=merge_runs, merge_vertical=merge_vertical, width_tolerance=width_tolerance)
+    svg_content = build_svg(img, layout, merge_runs=merge_runs, merge_vertical=merge_vertical)
     Path(output_path).write_text(svg_content, encoding="utf-8")
 
 

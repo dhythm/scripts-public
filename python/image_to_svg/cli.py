@@ -117,14 +117,8 @@ def main() -> None:
         pr.add_argument(
             "--color-merge",
             type=float,
-            default=10.0,
-            help="類似色マージ閾値（LAB色空間、デフォルト10.0）",
-        )
-        pr.add_argument(
-            "--width-tolerance",
-            type=int,
-            default=0,
-            help="縦マージ時の幅許容差（デフォルト0=厳密一致、1以上でグリーディマージ）",
+            default=20.0,
+            help="類似色マージ閾値（LAB色空間、デフォルト20.0）",
         )
         args = pr.parse_args(argv)
 
@@ -246,7 +240,6 @@ def main() -> None:
                 config_path=args.config,
                 merge_runs=not args.no_merge_runs,
                 merge_vertical=not args.no_merge_vertical,
-                width_tolerance=args.width_tolerance,
             )
             print(f"完了: {output}")
 
