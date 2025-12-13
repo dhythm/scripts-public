@@ -289,10 +289,10 @@ def find_contours_opencv(
     bitmap: "np.ndarray", epsilon: float = 1.0
 ) -> List[List[Tuple[int, int]]]:
     """
-    NumPy高速化された境界エッジ収集と輪郭トレース
+    OpenCVのfindContoursを使用した輪郭検出
 
-    trace_contour_numpy()のエッジ上書きバグを修正した版。
-    同じ開始点から複数のエッジが出る場合を正しく処理する。
+    ビットマップを2倍にスケールしてからfindContoursを実行し、
+    座標を1/2に戻すことでピクセル境界座標を正確に取得する。
 
     Args:
         bitmap: uint8のNumPy配列（255=塗りつぶし、0=背景）
@@ -302,118 +302,46 @@ def find_contours_opencv(
         輪郭のリスト [[(x, y), ...], ...]  境界座標
     """
     h, w = bitmap.shape
-    filled = bitmap > 0
 
-    # パディングを追加して境界チェックを簡略化
-    padded = np.pad(filled, 1, mode="constant", constant_values=False)
+    # ビットマップを2倍にスケール（境界座標を正確に取得するため）
+    # INTER_NEAREST でピクセルの境界を保持
+    scaled = cv2.resize(
+        bitmap,
+        (w * 2, h * 2),
+        interpolation=cv2.INTER_NEAREST
+    )
 
-    # 境界エッジを検出（隣接ピクセルとの差分）
-    top_edges = filled & ~padded[:-2, 1:-1]
-    bottom_edges = filled & ~padded[2:, 1:-1]
-    left_edges = filled & ~padded[1:-1, :-2]
-    right_edges = filled & ~padded[1:-1, 2:]
+    # 輪郭検出（RETR_TREE: 穴も含めた階層構造を取得）
+    contours, hierarchy = cv2.findContours(
+        scaled, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    # エッジをリストに収集（順序付き）
-    # 各エッジは (start_pt, end_pt) のタプル
-    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+    result = []
+    for contour in contours:
+        if len(contour) < 3:
+            continue
 
-    # 上辺エッジ: (x, y) → (x+1, y)
-    ys, xs = np.where(top_edges)
-    for x, y in zip(xs, ys):
-        edges.append(((x, y), (x + 1, y)))
+        # approxPolyDPで簡略化（スケール分を考慮してepsilon*2）
+        approx = cv2.approxPolyDP(contour, epsilon * 2, closed=True)
 
-    # 下辺エッジ: (x+1, y+1) → (x, y+1)
-    ys, xs = np.where(bottom_edges)
-    for x, y in zip(xs, ys):
-        edges.append(((x + 1, y + 1), (x, y + 1)))
+        # 座標を1/2に戻してピクセル境界座標に変換
+        # 2倍スケールでは、ピクセル境界が偶数座標になる
+        # OpenCVの輪郭座標を境界座標に変換: round((coord + 1) / 2)
+        points = [(round((pt[0][0] + 1) / 2), round((pt[0][1] + 1) / 2)) for pt in approx]
 
-    # 左辺エッジ: (x, y+1) → (x, y)
-    ys, xs = np.where(left_edges)
-    for x, y in zip(xs, ys):
-        edges.append(((x, y + 1), (x, y)))
+        # 重複点を除去
+        unique_points = []
+        for pt in points:
+            if not unique_points or pt != unique_points[-1]:
+                unique_points.append(pt)
+        # 最後と最初が同じなら除去
+        if len(unique_points) > 1 and unique_points[-1] == unique_points[0]:
+            unique_points = unique_points[:-1]
 
-    # 右辺エッジ: (x+1, y) → (x+1, y+1)
-    ys, xs = np.where(right_edges)
-    for x, y in zip(xs, ys):
-        edges.append(((x + 1, y), (x + 1, y + 1)))
+        if len(unique_points) >= 3:
+            result.append(unique_points)
 
-    if not edges:
-        return []
-
-    # エッジをチェーン化（複数エッジ対応版）
-    # start_pt → [edge1, edge2, ...] のマッピング
-    from collections import defaultdict
-
-    edge_from_start: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], Tuple[int, int]]]] = defaultdict(list)
-    for edge in edges:
-        start_pt, end_pt = edge
-        edge_from_start[start_pt].append(edge)
-
-    # 全ての輪郭をトレース
-    all_contours = []
-    used_edges: set = set()
-
-    for start_pt_key, edge_list in edge_from_start.items():
-        for initial_edge in edge_list:
-            if initial_edge in used_edges:
-                continue
-
-            # この開始点から輪郭をトレース
-            start_pt = initial_edge[0]
-            contour = [start_pt]
-            current_pt = start_pt
-            current_edge = initial_edge
-
-            max_steps = len(edges) + 1
-            for _ in range(max_steps):
-                used_edges.add(current_edge)
-                _, end_pt = current_edge
-                contour.append(end_pt)
-                current_pt = end_pt
-
-                if current_pt == start_pt:
-                    break
-
-                # 次のエッジを探す
-                next_edges = edge_from_start.get(current_pt, [])
-                next_edge = None
-                for e in next_edges:
-                    if e not in used_edges:
-                        next_edge = e
-                        break
-
-                if next_edge is None:
-                    break
-
-                current_edge = next_edge
-
-            if len(contour) < 4:  # 閉じた輪郭には最低4点必要
-                continue
-
-            # 連続する同一方向のエッジを統合（角だけを残す）
-            simplified = [contour[0]]
-            for i in range(1, len(contour) - 1):
-                prev = contour[i - 1]
-                curr = contour[i]
-                next_pt = contour[i + 1]
-
-                dx1 = curr[0] - prev[0]
-                dy1 = curr[1] - prev[1]
-                dx2 = next_pt[0] - curr[0]
-                dy2 = next_pt[1] - curr[1]
-
-                if (dx1, dy1) != (dx2, dy2):
-                    simplified.append(curr)
-
-            if len(simplified) >= 3:
-                # approxPolyDPで更に簡略化
-                pts_array = np.array(simplified, dtype=np.float32).reshape(-1, 1, 2)
-                approx = cv2.approxPolyDP(pts_array, epsilon, closed=True)
-                final_points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
-                if len(final_points) >= 3:
-                    all_contours.append(final_points)
-
-    return all_contours
+    return result
 
 
 def optimize_svg_opencv(
