@@ -29,6 +29,30 @@ class Rect:
     color: str  # "rgb(r,g,b)" 形式
 
 
+def _parse_dimension(value: str | None, default: int = 0) -> int:
+    """
+    SVGの寸法値をパース（パーセント、px単位に対応）
+
+    Args:
+        value: 寸法値の文字列（例: "100", "100px", "100%"）
+        default: パースできない場合のデフォルト値
+
+    Returns:
+        整数値（パーセントの場合は0を返す）
+    """
+    if value is None:
+        return default
+    value = value.strip()
+    if value.endswith("%"):
+        return 0  # パーセントは後でviewBoxから取得
+    if value.endswith("px"):
+        value = value[:-2]
+    try:
+        return int(float(value))
+    except ValueError:
+        return default
+
+
 def parse_svg_rects(svg_path: str) -> Tuple[int, int, List[Rect]]:
     """
     SVGファイルからrect要素をパース
@@ -42,17 +66,28 @@ def parse_svg_rects(svg_path: str) -> Tuple[int, int, List[Rect]]:
     tree = ET.parse(svg_path)
     root = tree.getroot()
 
-    # SVGサイズ取得
-    width = int(float(root.get("width", 0)))
-    height = int(float(root.get("height", 0)))
+    # SVGサイズ取得（width/heightがパーセントの場合はviewBoxを使用）
+    width = _parse_dimension(root.get("width"))
+    height = _parse_dimension(root.get("height"))
+
+    # viewBoxからサイズを取得（width/heightが0の場合）
+    if width == 0 or height == 0:
+        viewbox = root.get("viewBox")
+        if viewbox:
+            parts = viewbox.split()
+            if len(parts) >= 4:
+                if width == 0:
+                    width = int(float(parts[2]))
+                if height == 0:
+                    height = int(float(parts[3]))
 
     rects = []
     for elem in root.iter():
         if elem.tag.endswith("rect"):
-            x = int(float(elem.get("x", 0)))
-            y = int(float(elem.get("y", 0)))
-            w = int(float(elem.get("width", 0)))
-            h = int(float(elem.get("height", 0)))
+            x = _parse_dimension(elem.get("x"))
+            y = _parse_dimension(elem.get("y"))
+            w = _parse_dimension(elem.get("width"))
+            h = _parse_dimension(elem.get("height"))
             fill = elem.get("fill", "")
             if fill and w > 0 and h > 0:
                 rects.append(Rect(x, y, w, h, fill))
