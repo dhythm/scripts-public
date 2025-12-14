@@ -38,6 +38,7 @@ dependencies = [
     "svgwrite>=1.4.0",
     "pytest>=8.0.0",
     "vtracer>=0.6.11",
+    "easyocr>=1.7.0",
 ]
 
 [project.scripts]

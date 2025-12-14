@@ -29,6 +29,16 @@ try:
 except ImportError:
     pass
 
+# EasyOCRの遅延インポート
+_EASYOCR_AVAILABLE = False
+_easyocr_reader = None
+try:
+    import easyocr
+
+    _EASYOCR_AVAILABLE = True
+except ImportError:
+    pass
+
 
 @dataclass
 class Rect:
@@ -187,6 +197,182 @@ def build_color_map(
     for orig, snapped in pre_map.items():
         final_map[orig] = post_map.get(snapped, snapped)
     return final_map
+
+
+# =============================================================================
+# OCR機能（テキスト検出・<text>要素生成）
+# =============================================================================
+
+
+@dataclass
+class TextRegion:
+    """OCRで検出されたテキスト領域"""
+
+    bbox: Tuple[int, int, int, int]  # (x, y, width, height)
+    text: str
+    confidence: float
+
+
+def _get_easyocr_reader(languages: List[str]) -> "easyocr.Reader":
+    """EasyOCRリーダーを取得（シングルトン）"""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        print(f"EasyOCRを初期化中（言語: {languages}）...")
+        _easyocr_reader = easyocr.Reader(languages, gpu=False)
+    return _easyocr_reader
+
+
+def rects_to_image(
+    width: int, height: int, rects: List["Rect"]
+) -> "np.ndarray":
+    """
+    rect群からRGB画像（NumPy配列）を生成
+
+    Args:
+        width: 画像幅
+        height: 画像高さ
+        rects: rect要素のリスト
+
+    Returns:
+        RGB画像（uint8, shape: (height, width, 3)）
+    """
+    # 白背景で初期化
+    image = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+    for rect in rects:
+        rgb = _parse_rgb(rect.color)
+        if rgb is None:
+            continue
+        y1 = rect.y
+        y2 = min(rect.y + rect.height, height)
+        x1 = rect.x
+        x2 = min(rect.x + rect.width, width)
+        # BGRではなくRGBで設定
+        image[y1:y2, x1:x2] = rgb
+
+    return image
+
+
+def detect_text_with_ocr(
+    image: "np.ndarray",
+    languages: List[str] = ["ja", "en"],
+    min_confidence: float = 0.5,
+) -> List[TextRegion]:
+    """
+    OCRでテキスト領域を検出
+
+    Args:
+        image: RGB画像（NumPy配列）
+        languages: OCR言語リスト
+        min_confidence: 最小信頼度
+
+    Returns:
+        検出されたTextRegionのリスト
+    """
+    if not _EASYOCR_AVAILABLE:
+        print("警告: EasyOCRが利用できません。pip install easyocr を実行してください。")
+        return []
+
+    reader = _get_easyocr_reader(languages)
+
+    # EasyOCRはRGB画像を受け取る
+    results = reader.readtext(image)
+
+    text_regions = []
+    for bbox, text, confidence in results:
+        if confidence < min_confidence:
+            continue
+
+        # bboxは[[x1,y1], [x2,y1], [x2,y2], [x1,y2]]の形式
+        x_coords = [pt[0] for pt in bbox]
+        y_coords = [pt[1] for pt in bbox]
+        x = int(min(x_coords))
+        y = int(min(y_coords))
+        w = int(max(x_coords) - x)
+        h = int(max(y_coords) - y)
+
+        text_regions.append(TextRegion(
+            bbox=(x, y, w, h),
+            text=text,
+            confidence=confidence,
+        ))
+
+    return text_regions
+
+
+def estimate_font_size(height: int) -> int:
+    """テキスト領域の高さからフォントサイズを推定"""
+    # 経験的な係数（高さの約80%がフォントサイズ）
+    return max(8, int(height * 0.8))
+
+
+def text_regions_to_svg_elements(
+    text_regions: List[TextRegion],
+    font_family: str = "Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif",
+) -> List[str]:
+    """
+    TextRegionリストをSVG <text>要素に変換
+
+    Args:
+        text_regions: OCRで検出されたテキスト領域
+        font_family: フォントファミリー
+
+    Returns:
+        SVG <text>要素の文字列リスト
+    """
+    from xml.sax.saxutils import escape
+
+    elements = []
+    for region in text_regions:
+        x, y, w, h = region.bbox
+        font_size = estimate_font_size(h)
+
+        # テキストのベースライン位置（領域の下端に近い位置）
+        text_y = y + int(h * 0.85)
+        text_x = x
+
+        escaped_text = escape(region.text)
+
+        element = (
+            f'<text x="{text_x}" y="{text_y}" '
+            f'font-family="{font_family}" '
+            f'font-size="{font_size}" '
+            f'fill="rgb(0,0,0)">{escaped_text}</text>'
+        )
+        elements.append(element)
+
+    return elements
+
+
+def create_text_mask(
+    width: int,
+    height: int,
+    text_regions: List[TextRegion],
+    padding: int = 2,
+) -> "np.ndarray":
+    """
+    テキスト領域をマスクするビットマップを作成
+
+    Args:
+        width: 画像幅
+        height: 画像高さ
+        text_regions: テキスト領域リスト
+        padding: 領域を少し拡大するパディング
+
+    Returns:
+        マスク画像（255=テキスト領域、0=それ以外）
+    """
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    for region in text_regions:
+        x, y, w, h = region.bbox
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(width, x + w + padding)
+        y2 = min(height, y + h + padding)
+        mask[y1:y2, x1:x2] = 255
+
+    return mask
 
 
 def _parse_dimension(value: str | None, default: int = 0) -> int:
@@ -752,6 +938,9 @@ def optimize_svg_opencv(
     gray_threshold: float = 128.0,
     skip_background: bool = False,
     min_area: float = 0.0,
+    use_ocr: bool = False,
+    ocr_languages: List[str] | None = None,
+    ocr_min_confidence: float = 0.5,
 ) -> dict:
     """
     OpenCVを使用した高速版optimize_svg
@@ -760,9 +949,12 @@ def optimize_svg_opencv(
         input_path: 入力SVGパス（rect群）
         output_path: 出力SVGパス（path群）
         epsilon: 輪郭簡略化の許容誤差
+        use_ocr: OCRでテキスト検出を行う
+        ocr_languages: OCR言語リスト（デフォルト: ["ja", "en"]）
+        ocr_min_confidence: OCR最小信頼度
 
     Returns:
-        {"input_rects": N, "output_paths": M, "colors": K}
+        {"input_rects": N, "output_paths": M, "colors": K, "text_regions": L}
     """
     # 1. SVGパース
     print(f"SVGをパース中: {input_path}")
@@ -791,6 +983,27 @@ def optimize_svg_opencv(
     if skip_background:
         print(f"  背景色(推定): {bg_color}  ※path化せず<rect>で出力")
 
+    # 4.5. OCR処理（オプション）
+    text_regions: List[TextRegion] = []
+    text_mask: "np.ndarray | None" = None
+    if use_ocr:
+        if not _EASYOCR_AVAILABLE:
+            print("警告: EasyOCRが利用できません。--ocr オプションは無視されます。")
+            print("  インストール: pip install easyocr")
+        else:
+            print("OCRでテキストを検出中...")
+            # rect群から画像を生成
+            image = rects_to_image(width, height, rects)
+            # OCR実行
+            languages = ocr_languages if ocr_languages else ["ja", "en"]
+            text_regions = detect_text_with_ocr(image, languages, ocr_min_confidence)
+            print(f"  検出テキスト数: {len(text_regions)}")
+            for region in text_regions:
+                print(f"    - \"{region.text}\" (信頼度: {region.confidence:.2f})")
+            # テキスト領域のマスクを作成
+            if text_regions:
+                text_mask = create_text_mask(width, height, text_regions, padding=2)
+
     # 5. 各色の輪郭を抽出して、rootごとの複合パスにまとめる
     print("輪郭を抽出中（OpenCV）...")
     paths: List[str] = []
@@ -810,6 +1023,11 @@ def optimize_svg_opencv(
         if skip_background and color == bg_color:
             continue
 
+        # テキスト領域をマスク（OCR有効時）
+        if text_mask is not None:
+            bitmap = bitmap.copy()
+            bitmap[text_mask > 0] = 0
+
         contours = find_contours_opencv(bitmap, epsilon)
         groups = group_contours_by_nesting(contours, min_area=min_area)
 
@@ -825,9 +1043,17 @@ def optimize_svg_opencv(
 
     print(f"  path数: {len(paths)}")
 
-    # 4. SVG出力
+    # 6. テキスト要素を生成（OCR有効時）
+    text_elements: List[str] = []
+    if text_regions:
+        text_elements = text_regions_to_svg_elements(text_regions)
+        print(f"  text要素数: {len(text_elements)}")
+
+    # 7. SVG出力
     svg_content = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n'
     svg_content += "\n".join(paths)
+    if text_elements:
+        svg_content += "\n" + "\n".join(text_elements)
     svg_content += "\n</svg>"
 
     Path(output_path).write_text(svg_content, encoding="utf-8")
@@ -837,6 +1063,7 @@ def optimize_svg_opencv(
         "input_rects": len(rects),
         "output_paths": len(paths),
         "colors": len(bitmaps),
+        "text_regions": len(text_regions),
     }
 
 
@@ -1205,6 +1432,9 @@ def optimize_svg(
     gray_threshold: float = 128.0,
     skip_background: bool = False,
     min_area: float = 0.0,
+    use_ocr: bool = False,
+    ocr_languages: List[str] | None = None,
+    ocr_min_confidence: float = 0.5,
 ) -> dict:
     """
     rect群SVGをポリゴンpath SVGに最適化
@@ -1216,9 +1446,12 @@ def optimize_svg(
         input_path: 入力SVGパス（rect群）
         output_path: 出力SVGパス（path群）
         epsilon: 輪郭簡略化の許容誤差
+        use_ocr: OCRでテキスト検出を行う
+        ocr_languages: OCR言語リスト（デフォルト: ["ja", "en"]）
+        ocr_min_confidence: OCR最小信頼度
 
     Returns:
-        {"input_rects": N, "output_paths": M, "colors": K}
+        {"input_rects": N, "output_paths": M, "colors": K, "text_regions": L}
     """
     if _OPENCV_AVAILABLE:
         print("OpenCV版を使用（高速）")
@@ -1233,10 +1466,15 @@ def optimize_svg(
             gray_threshold=gray_threshold,
             skip_background=skip_background,
             min_area=min_area,
+            use_ocr=use_ocr,
+            ocr_languages=ocr_languages,
+            ocr_min_confidence=ocr_min_confidence,
         )
     else:
         print("警告: OpenCVが見つかりません。純Python版を使用（低速）")
         print("  高速化するには: pip install opencv-python numpy")
+        if use_ocr:
+            print("  注意: OCR機能はOpenCV版でのみ利用可能です")
         return optimize_svg_pure(input_path, output_path, epsilon)
 
 
@@ -1304,6 +1542,25 @@ def main() -> None:
         help="この面積未満の輪郭を捨てる（小さなゴミ除去）。例: 2、10",
     )
 
+    # --- OCRオプション ---
+    parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help="OCRでテキストを検出し、<text>要素として出力（EasyOCRが必要）",
+    )
+    parser.add_argument(
+        "--ocr-languages",
+        type=str,
+        default="ja,en",
+        help="OCR言語（カンマ区切り、デフォルト: ja,en）",
+    )
+    parser.add_argument(
+        "--ocr-min-confidence",
+        type=float,
+        default=0.5,
+        help="OCR最小信頼度（デフォルト: 0.5）",
+    )
+
     args = parser.parse_args()
 
     # 出力パスのデフォルト設定
@@ -1319,6 +1576,9 @@ def main() -> None:
     gray_tol = args.gray_tol if (args.gray_tol != 0) else (3 if args.clean else 0)
     min_area = args.min_area if (args.min_area != 0.0) else (2.0 if args.clean else 0.0)
 
+    # OCR言語をリストに変換
+    ocr_languages = [lang.strip() for lang in args.ocr_languages.split(",")]
+
     result = optimize_svg(
         args.input,
         output_path,
@@ -1330,11 +1590,16 @@ def main() -> None:
         gray_threshold=args.gray_threshold,
         skip_background=skip_background,
         min_area=min_area,
+        use_ocr=args.ocr,
+        ocr_languages=ocr_languages,
+        ocr_min_confidence=args.ocr_min_confidence,
     )
     print(f"\n結果:")
     print(f"  入力rect数: {result['input_rects']}")
     print(f"  出力path数: {result['output_paths']}")
     print(f"  色数: {result['colors']}")
+    if result.get("text_regions", 0) > 0:
+        print(f"  テキスト領域数: {result['text_regions']}")
     print(f"  削減率: {(1 - result['output_paths'] / result['input_rects']) * 100:.1f}%")
 
 
