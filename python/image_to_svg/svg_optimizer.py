@@ -11,6 +11,8 @@ rect群で構成されたSVGを入力として、同色のrectをグループ化
 from __future__ import annotations
 
 import argparse
+import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +39,154 @@ class Rect:
     width: int
     height: int
     color: str  # "rgb(r,g,b)" 形式
+
+
+# =============================================================================
+# 色ユーティリティ（アンチエイリアス対策 / 色数削減用）
+# =============================================================================
+
+
+_RGB_RE = re.compile(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)")
+
+
+def _parse_rgb(color: str) -> Tuple[int, int, int] | None:
+    """"rgb(r,g,b)" 形式を (r,g,b) にパース。"""
+    m = _RGB_RE.fullmatch(color.strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def _rgb_to_css(rgb: Tuple[int, int, int]) -> str:
+    r, g, b = rgb
+    return f"rgb({r},{g},{b})"
+
+
+def _rgb_dist(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> float:
+    # ユークリッド距離（簡易）
+    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+
+
+def _is_gray(rgb: Tuple[int, int, int], tol: int = 0) -> bool:
+    r, g, b = rgb
+    return abs(r - g) <= tol and abs(g - b) <= tol and abs(r - b) <= tol
+
+
+def _luma(rgb: Tuple[int, int, int]) -> float:
+    # ITU-R BT.601 近似（0..255）
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def build_area_by_color(rects: List[Rect]) -> Dict[str, int]:
+    """色ごとの総面積（≒ピクセル数）を算出。"""
+    area: Dict[str, int] = defaultdict(int)
+    for r in rects:
+        if r.width > 0 and r.height > 0:
+            area[r.color] += r.width * r.height
+    return dict(area)
+
+
+def build_color_map(
+    area_by_color: Dict[str, int],
+    *,
+    max_colors: int = 0,
+    anchor_min_dist: float = 0.0,
+    snap_gray: bool = False,
+    gray_tol: int = 0,
+    gray_threshold: float = 128.0,
+) -> Dict[str, str]:
+    """色の置換マップを作る。
+
+    - snap_gray=True のとき(ほぼ)グレーを白/黒に二値化（アンチエイリアスの粗さ抑制に効く）
+    - max_colors>0 のとき、代表色（アンカー）に寄せて色数を削減
+    - anchor_min_dist>0 のとき、アンカー同士が近すぎる場合は追加しない（グレーが乱立するのを防ぐ）
+    """
+
+    if not area_by_color:
+        return {}
+
+    # 1) まず任意でグレーを白/黒へスナップ
+    pre_map: Dict[str, str] = {}
+    for c in area_by_color.keys():
+        rgb = _parse_rgb(c)
+        if rgb is None:
+            pre_map[c] = c
+            continue
+        if snap_gray and _is_gray(rgb, tol=gray_tol):
+            pre_map[c] = "rgb(0,0,0)" if _luma(rgb) < gray_threshold else "rgb(255,255,255)"
+        else:
+            pre_map[c] = c
+
+    # スナップ後の面積を再集計
+    merged_area: Dict[str, int] = defaultdict(int)
+    for c, a in area_by_color.items():
+        merged_area[pre_map[c]] += a
+    merged_area = dict(merged_area)
+
+    # max_colors 無効なら pre_map が最終
+    if max_colors <= 0 or len(merged_area) <= max_colors:
+        # pre_map は、元色→スナップ先なので、merged_areaのキーに存在しない場合はそのまま
+        return pre_map
+
+    # 2) アンカーを面積順に選ぶ（近すぎる色はスキップ）
+    by_area = sorted(merged_area.items(), key=lambda x: -x[1])
+    anchors: List[str] = []
+    anchors_rgb: List[Tuple[int, int, int]] = []
+
+    for c, _a in by_area:
+        rgb = _parse_rgb(c)
+        if rgb is None:
+            continue
+        if not anchors:
+            anchors.append(c)
+            anchors_rgb.append(rgb)
+            if len(anchors) >= max_colors:
+                break
+            continue
+
+        if anchor_min_dist > 0:
+            if min(_rgb_dist(rgb, ar) for ar in anchors_rgb) < anchor_min_dist:
+                continue
+        anchors.append(c)
+        anchors_rgb.append(rgb)
+        if len(anchors) >= max_colors:
+            break
+
+    # もし距離制約でアンカーが足りない場合は、残りを距離無視で取る
+    if len(anchors) < max_colors:
+        for c, _a in by_area:
+            if c in anchors:
+                continue
+            rgb = _parse_rgb(c)
+            if rgb is None:
+                continue
+            anchors.append(c)
+            anchors_rgb.append(rgb)
+            if len(anchors) >= max_colors:
+                break
+
+    # 3) スナップ後の各色を最近傍アンカーへ
+    post_map: Dict[str, str] = {}
+    for c in merged_area.keys():
+        rgb = _parse_rgb(c)
+        if rgb is None or not anchors:
+            post_map[c] = c
+            continue
+        best_i = 0
+        best_d = 1e18
+        for i, ar in enumerate(anchors_rgb):
+            d = _rgb_dist(rgb, ar)
+            if d < best_d:
+                best_d = d
+                best_i = i
+        post_map[c] = anchors[best_i]
+
+    # 4) 元色→スナップ先→アンカー へ変換
+    final_map: Dict[str, str] = {}
+    for orig, snapped in pre_map.items():
+        final_map[orig] = post_map.get(snapped, snapped)
+    return final_map
 
 
 def _parse_dimension(value: str | None, default: int = 0) -> int:
@@ -167,6 +317,40 @@ def rects_to_bitmap_numpy(
     return bitmaps
 
 
+def rects_to_bitmap_numpy_mapped(
+    width: int,
+    height: int,
+    rects: List[Rect],
+    color_map: Dict[str, str],
+) -> Dict[str, "np.ndarray"]:
+    """rect群を色変換しつつ色ごとのNumPy配列に変換（OpenCV用）。
+
+    Args:
+        width: 画像幅
+        height: 画像高さ
+        rects: rect要素
+        color_map: 元色 → 変換後色 のマップ
+
+    Returns:
+        {mapped_color: numpy uint8 array}
+    """
+    bitmaps: Dict[str, np.ndarray] = {}
+
+    for rect in rects:
+        mapped = color_map.get(rect.color, rect.color)
+        if mapped not in bitmaps:
+            bitmaps[mapped] = np.zeros((height, width), dtype=np.uint8)
+
+        bitmap = bitmaps[mapped]
+        y1 = rect.y
+        y2 = min(rect.y + rect.height, height)
+        x1 = rect.x
+        x2 = min(rect.x + rect.width, width)
+        bitmap[y1:y2, x1:x2] = 255
+
+    return bitmaps
+
+
 def trace_contour_numpy(
     bitmap: "np.ndarray",
 ) -> List[List[Tuple[int, int]]]:
@@ -285,110 +469,289 @@ def trace_contour_numpy(
     return all_contours
 
 
-def bitmap_to_compound_paths(
-    bitmap: "np.ndarray",
-    color: str,
-    epsilon: float = 1.0,
-    min_area: float = 2.0,
-) -> List[str]:
+def find_contours_opencv(
+    bitmap: "np.ndarray", epsilon: float = 1.0
+) -> List[List[Tuple[int, int]]]:
     """
-    RETR_CCOMP で外周と穴の階層を取り、外周+穴を1 path(evenodd)にまとめて返す
+    NumPy高速化された境界エッジ収集と輪郭トレース
 
-    ビットマップを2倍にスケールしてからfindContoursを実行し、
-    座標を1/2に戻すことでピクセル境界座標を正確に取得する。
+    trace_contour_numpy()のエッジ上書きバグを修正した版。
+    同じ開始点から複数のエッジが出る場合も正しく処理する。
 
     Args:
         bitmap: uint8のNumPy配列（255=塗りつぶし、0=背景）
-        color: 塗りつぶし色（CSS形式）
         epsilon: 輪郭簡略化の許容誤差（approxPolyDPに渡す）
-        min_area: 最小面積（これより小さい輪郭はノイズとして除去）
 
     Returns:
-        SVG path要素のリスト
+        輪郭のリスト [[(x, y), ...], ...]  境界座標
     """
     h, w = bitmap.shape
+    filled = bitmap > 0
 
-    # ビットマップを2倍にスケール（境界座標を正確に取得するため）
-    scaled = cv2.resize(bitmap, (w * 2, h * 2), interpolation=cv2.INTER_NEAREST)
+    # パディングを追加して境界チェックを簡略化
+    padded = np.pad(filled, 1, mode="constant", constant_values=False)
 
-    # 輪郭検出（RETR_CCOMP: 2階層の階層構造を取得 - 外周と穴）
-    contours, hierarchy = cv2.findContours(
-        scaled, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
-    )
+    # 境界エッジを検出（隣接ピクセルとの差分）
+    top_edges = filled & ~padded[:-2, 1:-1]
+    bottom_edges = filled & ~padded[2:, 1:-1]
+    left_edges = filled & ~padded[1:-1, :-2]
+    right_edges = filled & ~padded[1:-1, 2:]
 
-    if hierarchy is None or len(contours) == 0:
+    # エッジをリストに収集（順序付き）
+    # 各エッジは (start_pt, end_pt) のタプル
+    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+
+    # 上辺エッジ: (x, y) → (x+1, y)
+    ys, xs = np.where(top_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x, y), (x + 1, y)))
+
+    # 下辺エッジ: (x+1, y+1) → (x, y+1)
+    ys, xs = np.where(bottom_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x + 1, y + 1), (x, y + 1)))
+
+    # 左辺エッジ: (x, y+1) → (x, y)
+    ys, xs = np.where(left_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x, y + 1), (x, y)))
+
+    # 右辺エッジ: (x+1, y) → (x+1, y+1)
+    ys, xs = np.where(right_edges)
+    for x, y in zip(xs, ys):
+        edges.append(((x + 1, y), (x + 1, y + 1)))
+
+    if not edges:
         return []
 
-    hierarchy = hierarchy[0]  # shape: (N, 4) - [next, prev, child, parent]
+    # エッジをチェーン化（複数エッジ対応版）
+    # start_pt → [edge1, edge2, ...] のマッピング
+    from collections import defaultdict
 
-    def contour_to_d(cnt: "np.ndarray") -> str:
-        """輪郭をSVG path の d 属性の部分文字列に変換"""
-        if cnt is None or len(cnt) < 3:
-            return ""
+    edge_from_start: Dict[Tuple[int, int], List[Tuple[Tuple[int, int], Tuple[int, int]]]] = defaultdict(list)
+    for edge in edges:
+        start_pt, end_pt = edge
+        edge_from_start[start_pt].append(edge)
 
-        # approxPolyDPで簡略化（スケール分を考慮してepsilon*2）
-        approx = cv2.approxPolyDP(cnt, epsilon * 2, closed=True)
-        if approx is None or len(approx) < 3:
-            return ""
+    # 全ての輪郭をトレース
+    all_contours = []
+    used_edges: set = set()
 
-        # 座標を1/2に戻してピクセル境界座標に変換
-        points = [(round((pt[0][0] + 1) / 2), round((pt[0][1] + 1) / 2)) for pt in approx]
+    for start_pt_key, edge_list in edge_from_start.items():
+        for initial_edge in edge_list:
+            if initial_edge in used_edges:
+                continue
 
-        # 重複点を除去
-        unique_points = []
-        for pt in points:
-            if not unique_points or pt != unique_points[-1]:
-                unique_points.append(pt)
-        if len(unique_points) > 1 and unique_points[-1] == unique_points[0]:
-            unique_points = unique_points[:-1]
+            # この開始点から輪郭をトレース
+            start_pt = initial_edge[0]
+            contour = [start_pt]
+            current_pt = start_pt
+            current_edge = initial_edge
 
-        if len(unique_points) < 3:
-            return ""
+            max_steps = len(edges) + 1
+            for _ in range(max_steps):
+                used_edges.add(current_edge)
+                _, end_pt = current_edge
+                contour.append(end_pt)
+                current_pt = end_pt
 
-        d = f"M {unique_points[0][0]} {unique_points[0][1]}"
-        for x, y in unique_points[1:]:
-            d += f" L {x} {y}"
-        d += " Z"
-        return d
+                if current_pt == start_pt:
+                    break
 
-    result: List[str] = []
+                # 次のエッジを探す
+                next_edges = edge_from_start.get(current_pt, [])
+                next_edge = None
+                for e in next_edges:
+                    if e not in used_edges:
+                        next_edge = e
+                        break
 
-    for i, h_entry in enumerate(hierarchy):
-        parent = h_entry[3]
-        if parent != -1:
-            continue  # 穴側は親から辿るのでスキップ
+                if next_edge is None:
+                    break
 
-        # 小さすぎる外周はノイズとして捨てる
-        # 面積は2倍スケールなので4倍になっている
-        if abs(cv2.contourArea(contours[i])) < min_area * 4:
+                current_edge = next_edge
+
+            if len(contour) < 4:  # 閉じた輪郭には最低4点必要
+                continue
+
+            # 連続する同一方向のエッジを統合（角だけを残す）
+            simplified = [contour[0]]
+            for i in range(1, len(contour) - 1):
+                prev = contour[i - 1]
+                curr = contour[i]
+                next_pt = contour[i + 1]
+
+                dx1 = curr[0] - prev[0]
+                dy1 = curr[1] - prev[1]
+                dx2 = next_pt[0] - curr[0]
+                dy2 = next_pt[1] - curr[1]
+
+                if (dx1, dy1) != (dx2, dy2):
+                    simplified.append(curr)
+
+            if len(simplified) >= 3:
+                # approxPolyDPで更に簡略化
+                pts_array = np.array(simplified, dtype=np.float32).reshape(-1, 1, 2)
+                approx = cv2.approxPolyDP(pts_array, epsilon, closed=True)
+                final_points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+                if len(final_points) >= 3:
+                    all_contours.append(final_points)
+
+    return all_contours
+
+
+# =============================================================================
+# 輪郭 → 複合パス（穴対応）
+# =============================================================================
+
+
+def _signed_area(points: List[Tuple[int, int]]) -> float:
+    """多角形の符号付き面積（shoelace）。"""
+    if len(points) < 3:
+        return 0.0
+    s = 0.0
+    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
+        s += x1 * y2 - x2 * y1
+    return 0.5 * s
+
+
+def _bbox(points: List[Tuple[int, int]]) -> Tuple[int, int, int, int]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _find_inside_point(points: List[Tuple[int, int]]) -> Tuple[float, float]:
+    """輪郭の内部点を1つ返す（包含判定用）。"""
+    x0, y0, x1, y1 = _bbox(points)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+    cnt = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
+
+    def inside(px: float, py: float) -> bool:
+        return cv2.pointPolygonTest(cnt, (float(px), float(py)), False) > 0
+
+    if inside(cx, cy):
+        return cx, cy
+
+    # 近傍探索（軽量）
+    for r in range(1, 20):
+        for dx, dy in ((r, 0), (-r, 0), (0, r), (0, -r), (r, r), (-r, r), (r, -r), (-r, -r)):
+            px, py = cx + dx, cy + dy
+            if inside(px, py):
+                return px, py
+
+    # bbox内を粗く走査（細長い輪郭などで中心が外に出るケースの救済）
+    # 小さいbboxなら 1px 刻み、大きいbboxなら粗めに
+    bw = max(0, x1 - x0)
+    bh = max(0, y1 - y0)
+    step = max(1, int(min(bw, bh) // 10))
+    for yy in range(int(y0) + 1, int(y1), step):
+        for xx in range(int(x0) + 1, int(x1), step):
+            if inside(xx + 0.5, yy + 0.5):
+                return xx + 0.5, yy + 0.5
+
+    # fallback
+    return points[0][0] + 0.5, points[0][1] + 0.5
+
+
+def _contour_to_d(points: List[Tuple[int, int]]) -> str:
+    if len(points) < 3:
+        return ""
+    d = f"M {points[0][0]} {points[0][1]}"
+    for x, y in points[1:]:
+        d += f" L {x} {y}"
+    d += " Z"
+    return d
+
+
+def group_contours_by_nesting(
+    contours: List[List[Tuple[int, int]]],
+    *,
+    min_area: float = 0.0,
+) -> List[List[List[Tuple[int, int]]]]:
+    """輪郭を包含（ネスト）関係でグループ化し、rootごとに返す。
+
+    evenodd fill-rule を使う前提で、外周/穴/島をすべて同一pathのサブパスとして
+    まとめると、穴が潰れずに描画できる。
+    """
+
+    # 面積の小さいノイズを除去しつつ情報を作る
+    polys: List[List[Tuple[int, int]]] = []
+    areas: List[float] = []
+    testpts: List[Tuple[float, float]] = []
+    bboxes: List[Tuple[int, int, int, int]] = []
+
+    for p in contours:
+        a = abs(_signed_area(p))
+        if a < max(0.0, min_area):
             continue
+        polys.append(p)
+        areas.append(a)
+        bboxes.append(_bbox(p))
+        testpts.append(_find_inside_point(p))
 
-        d_parts = []
-        d_outer = contour_to_d(contours[i])
-        if not d_outer:
-            continue
-        d_parts.append(d_outer)
+    if not polys:
+        return []
 
-        # 穴（子）を追加
-        child = h_entry[2]
-        while child != -1:
-            # 小さすぎる穴は無視（ノイズ穴対策）
-            if abs(cv2.contourArea(contours[child])) >= min_area * 4:
-                d_hole = contour_to_d(contours[child])
-                if d_hole:
-                    d_parts.append(d_hole)
-            child = hierarchy[child][0]  # 次の穴（兄弟）
+    # 面積降順で処理（親は必ず自分より大きい面積）
+    order = sorted(range(len(polys)), key=lambda i: -areas[i])
+    polys = [polys[i] for i in order]
+    areas = [areas[i] for i in order]
+    testpts = [testpts[i] for i in order]
+    bboxes = [bboxes[i] for i in order]
 
-        d_all = " ".join(d_parts)
-        result.append(f'<path d="{d_all}" fill="{color}" fill-rule="evenodd"/>')
+    cnt_np = [np.array(p, dtype=np.float32).reshape(-1, 1, 2) for p in polys]
 
-    return result
+    parent = [-1] * len(polys)
+    for i in range(len(polys)):
+        px, py = testpts[i]
+        best_parent = -1
+        best_area = 1e30
+        for j in range(i):
+            # bbox でまず粗く弾く
+            x0, y0, x1, y1 = bboxes[j]
+            if not (x0 <= px <= x1 and y0 <= py <= y1):
+                continue
+            if cv2.pointPolygonTest(cnt_np[j], (float(px), float(py)), False) > 0:
+                if areas[j] < best_area:
+                    best_area = areas[j]
+                    best_parent = j
+        parent[i] = best_parent
+
+    children: List[List[int]] = [[] for _ in range(len(polys))]
+    roots: List[int] = []
+    for i, p in enumerate(parent):
+        if p == -1:
+            roots.append(i)
+        else:
+            children[p].append(i)
+
+    def collect_subtree(r: int, out: List[int]) -> None:
+        out.append(r)
+        for ch in children[r]:
+            collect_subtree(ch, out)
+
+    groups: List[List[List[Tuple[int, int]]]] = []
+    for r in roots:
+        idxs: List[int] = []
+        collect_subtree(r, idxs)
+        groups.append([polys[k] for k in idxs])
+    return groups
 
 
 def optimize_svg_opencv(
     input_path: str,
     output_path: str,
     epsilon: float = 1.0,
+    *,
+    max_colors: int = 0,
+    anchor_min_dist: float = 0.0,
+    snap_gray: bool = False,
+    gray_tol: int = 0,
+    gray_threshold: float = 128.0,
+    skip_background: bool = False,
+    min_area: float = 0.0,
 ) -> dict:
     """
     OpenCVを使用した高速版optimize_svg
@@ -406,20 +769,59 @@ def optimize_svg_opencv(
     width, height, rects = parse_svg_rects(input_path)
     print(f"  サイズ: {width}x{height}, rect数: {len(rects)}")
 
-    # 2. 色ごとにNumPyビットマップ化
-    print("ビットマップに変換中（NumPy）...")
-    bitmaps = rects_to_bitmap_numpy(width, height, rects)
-    print(f"  色数: {len(bitmaps)}")
+    # 2. 色の面積集計 → 背景推定（最大面積の色）
+    area_by_color = build_area_by_color(rects)
+    bg_original = max(area_by_color.items(), key=lambda x: x[1])[0] if area_by_color else "rgb(255,255,255)"
 
-    # 3. 各色の輪郭を抽出してpath化（穴対応の複合パス）
+    # 3. 色の置換マップ作成（任意: グレー二値化 / 色数削減）
+    color_map = build_color_map(
+        area_by_color,
+        max_colors=max_colors,
+        anchor_min_dist=anchor_min_dist,
+        snap_gray=snap_gray,
+        gray_tol=gray_tol,
+        gray_threshold=gray_threshold,
+    )
+    bg_color = color_map.get(bg_original, bg_original)
+
+    # 4. 色ごとにNumPyビットマップ化（置換後の色で集計）
+    print("ビットマップに変換中（NumPy）...")
+    bitmaps = rects_to_bitmap_numpy_mapped(width, height, rects, color_map)
+    print(f"  色数: {len(bitmaps)}")
+    if skip_background:
+        print(f"  背景色(推定): {bg_color}  ※path化せず<rect>で出力")
+
+    # 5. 各色の輪郭を抽出して、rootごとの複合パスにまとめる
     print("輪郭を抽出中（OpenCV）...")
-    paths = []
-    for i, (color, bitmap) in enumerate(bitmaps.items()):
-        paths.extend(bitmap_to_compound_paths(bitmap, color, epsilon=epsilon))
+    paths: List[str] = []
+
+    # 背景は最背面に1枚
+    if skip_background:
+        paths.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="{bg_color}"/>')
+
+    # 描画順: 面積の大きい色を先に描画 → 小さなディテールを後に
+    mapped_area: Dict[str, int] = defaultdict(int)
+    for orig, a in area_by_color.items():
+        mapped_area[color_map.get(orig, orig)] += a
+
+    items = sorted(bitmaps.items(), key=lambda kv: -mapped_area.get(kv[0], 0))
+
+    for i, (color, bitmap) in enumerate(items):
+        if skip_background and color == bg_color:
+            continue
+
+        contours = find_contours_opencv(bitmap, epsilon)
+        groups = group_contours_by_nesting(contours, min_area=min_area)
+
+        for polys in groups:
+            d_parts = [_contour_to_d(p) for p in polys]
+            d = " ".join([x for x in d_parts if x])
+            if d:
+                paths.append(f'<path d="{d}" fill="{color}" fill-rule="evenodd"/>')
 
         # 進捗表示（色が多い場合）
-        if len(bitmaps) > 10 and (i + 1) % 10 == 0:
-            print(f"    {i + 1}/{len(bitmaps)} 色処理完了")
+        if len(items) > 10 and (i + 1) % 10 == 0:
+            print(f"    {i + 1}/{len(items)} 色処理完了")
 
     print(f"  path数: {len(paths)}")
 
@@ -795,6 +1197,14 @@ def optimize_svg(
     input_path: str,
     output_path: str,
     epsilon: float = 1.0,
+    *,
+    max_colors: int = 0,
+    anchor_min_dist: float = 0.0,
+    snap_gray: bool = False,
+    gray_tol: int = 0,
+    gray_threshold: float = 128.0,
+    skip_background: bool = False,
+    min_area: float = 0.0,
 ) -> dict:
     """
     rect群SVGをポリゴンpath SVGに最適化
@@ -812,7 +1222,18 @@ def optimize_svg(
     """
     if _OPENCV_AVAILABLE:
         print("OpenCV版を使用（高速）")
-        return optimize_svg_opencv(input_path, output_path, epsilon)
+        return optimize_svg_opencv(
+            input_path,
+            output_path,
+            epsilon,
+            max_colors=max_colors,
+            anchor_min_dist=anchor_min_dist,
+            snap_gray=snap_gray,
+            gray_tol=gray_tol,
+            gray_threshold=gray_threshold,
+            skip_background=skip_background,
+            min_area=min_area,
+        )
     else:
         print("警告: OpenCVが見つかりません。純Python版を使用（低速）")
         print("  高速化するには: pip install opencv-python numpy")
@@ -836,6 +1257,53 @@ def main() -> None:
         help="輪郭簡略化の許容誤差（デフォルト1.0、大きいほど簡略化）",
     )
 
+    # --- 品質/編集性を上げるためのオプション ---
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="スクリーンショット/図表向けの推奨設定をまとめて適用（背景スキップ + グレー二値化 + 小ノイズ除去）",
+    )
+    parser.add_argument(
+        "--skip-background",
+        action="store_true",
+        help="最大面積の色（背景想定）をpath化せず、全体背景の<rect> 1枚にする",
+    )
+    parser.add_argument(
+        "--snap-gray",
+        action="store_true",
+        help="(ほぼ)グレーを白/黒に二値化してアンチエイリアス由来の粗さを抑える",
+    )
+    parser.add_argument(
+        "--gray-tol",
+        type=int,
+        default=0,
+        help="グレー判定の許容差（例: 3）  ※snap-gray時のみ",
+    )
+    parser.add_argument(
+        "--gray-threshold",
+        type=float,
+        default=128.0,
+        help="グレー二値化の閾値（輝度<閾値なら黒、それ以外は白）※snap-gray時のみ",
+    )
+    parser.add_argument(
+        "--max-colors",
+        type=int,
+        default=0,
+        help="代表色（アンカー）へ寄せて色数を削減（0で無効）",
+    )
+    parser.add_argument(
+        "--anchor-min-dist",
+        type=float,
+        default=0.0,
+        help="アンカー同士が近い色の場合は追加しない距離（例: 25）",
+    )
+    parser.add_argument(
+        "--min-area",
+        type=float,
+        default=0.0,
+        help="この面積未満の輪郭を捨てる（小さなゴミ除去）。例: 2、10",
+    )
+
     args = parser.parse_args()
 
     # 出力パスのデフォルト設定
@@ -845,7 +1313,24 @@ def main() -> None:
         input_path = Path(args.input)
         output_path = str(input_path.with_stem(input_path.stem + "_optimized"))
 
-    result = optimize_svg(args.input, output_path, args.epsilon)
+    # cleanプリセット（デフォルト値が未変更のときだけ上書き）
+    skip_background = args.skip_background or args.clean
+    snap_gray = args.snap_gray or args.clean
+    gray_tol = args.gray_tol if (args.gray_tol != 0) else (3 if args.clean else 0)
+    min_area = args.min_area if (args.min_area != 0.0) else (2.0 if args.clean else 0.0)
+
+    result = optimize_svg(
+        args.input,
+        output_path,
+        args.epsilon,
+        max_colors=args.max_colors,
+        anchor_min_dist=args.anchor_min_dist,
+        snap_gray=snap_gray,
+        gray_tol=gray_tol,
+        gray_threshold=args.gray_threshold,
+        skip_background=skip_background,
+        min_area=min_area,
+    )
     print(f"\n結果:")
     print(f"  入力rect数: {result['input_rects']}")
     print(f"  出力path数: {result['output_paths']}")
