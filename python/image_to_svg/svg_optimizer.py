@@ -308,6 +308,7 @@ def estimate_font_size(height: int) -> int:
 
 def text_regions_to_svg_elements(
     text_regions: List[TextRegion],
+    text_colors: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] | None = None,
     font_family: str = "Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif",
 ) -> List[str]:
     """
@@ -315,6 +316,7 @@ def text_regions_to_svg_elements(
 
     Args:
         text_regions: OCRで検出されたテキスト領域
+        text_colors: 各領域の (背景色, テキスト色) リスト（Noneの場合は黒）
         font_family: フォントファミリー
 
     Returns:
@@ -323,7 +325,7 @@ def text_regions_to_svg_elements(
     from xml.sax.saxutils import escape
 
     elements = []
-    for region in text_regions:
+    for i, region in enumerate(text_regions):
         x, y, w, h = region.bbox
         font_size = estimate_font_size(h)
 
@@ -333,15 +335,58 @@ def text_regions_to_svg_elements(
 
         escaped_text = escape(region.text)
 
+        # テキスト色を取得
+        if text_colors and i < len(text_colors):
+            _, text_color = text_colors[i]
+            fill_color = f"rgb({text_color[0]},{text_color[1]},{text_color[2]})"
+        else:
+            fill_color = "rgb(0,0,0)"
+
         element = (
             f'<text x="{text_x}" y="{text_y}" '
             f'font-family="{font_family}" '
             f'font-size="{font_size}" '
-            f'fill="rgb(0,0,0)">{escaped_text}</text>'
+            f'fill="{fill_color}">{escaped_text}</text>'
         )
         elements.append(element)
 
     return elements
+
+
+def create_text_background_rects(
+    text_regions: List[TextRegion],
+    text_colors: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]],
+    padding: int = 2,
+) -> List[str]:
+    """
+    テキスト領域の背景を塗りつぶすrect要素を生成
+
+    Args:
+        text_regions: テキスト領域リスト
+        text_colors: 各領域の (背景色, テキスト色) リスト
+        padding: 領域を少し拡大するパディング
+
+    Returns:
+        SVG <rect>要素の文字列リスト
+    """
+    rects = []
+    for i, region in enumerate(text_regions):
+        x, y, w, h = region.bbox
+        x1 = x - padding
+        y1 = y - padding
+        rect_w = w + padding * 2
+        rect_h = h + padding * 2
+
+        if i < len(text_colors):
+            bg_color, _ = text_colors[i]
+            fill_color = f"rgb({bg_color[0]},{bg_color[1]},{bg_color[2]})"
+        else:
+            fill_color = "rgb(255,255,255)"
+
+        rect = f'<rect x="{x1}" y="{y1}" width="{rect_w}" height="{rect_h}" fill="{fill_color}"/>'
+        rects.append(rect)
+
+    return rects
 
 
 def create_text_mask(
@@ -373,6 +418,66 @@ def create_text_mask(
         mask[y1:y2, x1:x2] = 255
 
     return mask
+
+
+def detect_text_colors(
+    image: "np.ndarray",
+    text_regions: List[TextRegion],
+) -> List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]]:
+    """
+    各テキスト領域の背景色とテキスト色を検出
+
+    Args:
+        image: RGB画像（NumPy配列）
+        text_regions: テキスト領域リスト
+
+    Returns:
+        [(bg_color, text_color), ...] のリスト（RGB タプル）
+    """
+    colors = []
+
+    for region in text_regions:
+        x, y, w, h = region.bbox
+        # 領域を少し広げて取得
+        padding = 2
+        x1 = max(0, x - padding)
+        y1 = max(0, y - padding)
+        x2 = min(image.shape[1], x + w + padding)
+        y2 = min(image.shape[0], y + h + padding)
+
+        roi = image[y1:y2, x1:x2]
+
+        if roi.size == 0:
+            colors.append(((255, 255, 255), (0, 0, 0)))
+            continue
+
+        # ピクセルを1Dに変換
+        pixels = roi.reshape(-1, 3)
+
+        # 最頻色を背景色とする（通常、背景が最も広い面積を占める）
+        # 簡易的にユニークな色とそのカウントを取得
+        unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
+
+        # 最頻色 = 背景色
+        bg_idx = np.argmax(counts)
+        bg_color = tuple(int(c) for c in unique_colors[bg_idx])
+
+        # テキスト色 = 背景色と最も異なる色（または2番目に多い色）
+        if len(unique_colors) > 1:
+            # 背景色との距離が最大の色を探す
+            bg_array = np.array(bg_color)
+            distances = np.sqrt(np.sum((unique_colors.astype(float) - bg_array) ** 2, axis=1))
+            # 背景色自身は除外
+            distances[bg_idx] = 0
+            text_idx = np.argmax(distances)
+            text_color = tuple(int(c) for c in unique_colors[text_idx])
+        else:
+            # 色が1つしかない場合は黒をテキスト色とする
+            text_color = (0, 0, 0)
+
+        colors.append((bg_color, text_color))
+
+    return colors
 
 
 def _parse_dimension(value: str | None, default: int = 0) -> int:
@@ -985,7 +1090,8 @@ def optimize_svg_opencv(
 
     # 4.5. OCR処理（オプション）
     text_regions: List[TextRegion] = []
-    text_mask: "np.ndarray | None" = None
+    text_colors: List[Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = []
+    image: "np.ndarray | None" = None
     if use_ocr:
         if not _EASYOCR_AVAILABLE:
             print("警告: EasyOCRが利用できません。--ocr オプションは無視されます。")
@@ -1000,9 +1106,11 @@ def optimize_svg_opencv(
             print(f"  検出テキスト数: {len(text_regions)}")
             for region in text_regions:
                 print(f"    - \"{region.text}\" (信頼度: {region.confidence:.2f})")
-            # テキスト領域のマスクを作成
+            # テキスト領域の背景色とテキスト色を検出
             if text_regions:
-                text_mask = create_text_mask(width, height, text_regions, padding=2)
+                text_colors = detect_text_colors(image, text_regions)
+                for i, (bg, txt) in enumerate(text_colors):
+                    print(f"      背景: rgb{bg}, テキスト: rgb{txt}")
 
     # 5. 各色の輪郭を抽出して、rootごとの複合パスにまとめる
     print("輪郭を抽出中（OpenCV）...")
@@ -1023,11 +1131,6 @@ def optimize_svg_opencv(
         if skip_background and color == bg_color:
             continue
 
-        # テキスト領域をマスク（OCR有効時）
-        if text_mask is not None:
-            bitmap = bitmap.copy()
-            bitmap[text_mask > 0] = 0
-
         contours = find_contours_opencv(bitmap, epsilon)
         groups = group_contours_by_nesting(contours, min_area=min_area)
 
@@ -1044,14 +1147,20 @@ def optimize_svg_opencv(
     print(f"  path数: {len(paths)}")
 
     # 6. テキスト要素を生成（OCR有効時）
+    # テキスト領域は背景rectで元の文字を消し、その上にtext要素を配置
+    text_bg_rects: List[str] = []
     text_elements: List[str] = []
-    if text_regions:
-        text_elements = text_regions_to_svg_elements(text_regions)
+    if text_regions and text_colors:
+        text_bg_rects = create_text_background_rects(text_regions, text_colors, padding=2)
+        text_elements = text_regions_to_svg_elements(text_regions, text_colors)
         print(f"  text要素数: {len(text_elements)}")
 
     # 7. SVG出力
     svg_content = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n'
     svg_content += "\n".join(paths)
+    # テキスト領域: 背景rectで元の文字を消す → text要素で再現
+    if text_bg_rects:
+        svg_content += "\n" + "\n".join(text_bg_rects)
     if text_elements:
         svg_content += "\n" + "\n".join(text_elements)
     svg_content += "\n</svg>"
