@@ -120,6 +120,41 @@ def main() -> None:
             default=20.0,
             help="類似色マージ閾値（LAB色空間、デフォルト20.0）",
         )
+        # 最適化オプション
+        pr.add_argument(
+            "--optimize",
+            action="store_true",
+            help="rect SVG生成後にポリゴンpath最適化を実行",
+        )
+        pr.add_argument(
+            "--epsilon",
+            type=float,
+            default=1.0,
+            help="輪郭簡略化の許容誤差（--optimize時、デフォルト1.0）",
+        )
+        pr.add_argument(
+            "--clean",
+            action="store_true",
+            help="最適化時の推奨設定（背景スキップ + グレー二値化 + 小ノイズ除去）",
+        )
+        # OCRオプション
+        pr.add_argument(
+            "--ocr",
+            action="store_true",
+            help="OCRでテキストを検出し<text>要素として出力（--optimize必須、EasyOCRが必要）",
+        )
+        pr.add_argument(
+            "--ocr-languages",
+            type=str,
+            default="ja,en",
+            help="OCR言語（カンマ区切り、デフォルト: ja,en）",
+        )
+        pr.add_argument(
+            "--ocr-min-confidence",
+            type=float,
+            default=0.5,
+            help="OCR最小信頼度（デフォルト: 0.5）",
+        )
         args = pr.parse_args(argv)
 
         if not Path(args.input).exists():
@@ -234,13 +269,61 @@ def main() -> None:
 
                 input_for_svg = temp_png_path
 
+            # OCRが指定されている場合は--optimizeを自動有効化
+            if args.ocr and not args.optimize:
+                print("注意: --ocr が指定されたため --optimize を自動的に有効化します")
+                args.optimize = True
+
+            # 最適化を行う場合は一時ファイルにrect SVGを出力
+            if args.optimize:
+                import tempfile
+                import os as temp_os
+
+                temp_svg_fd, temp_svg_path = tempfile.mkstemp(suffix="_rects.svg")
+                temp_os.close(temp_svg_fd)
+                rect_output = temp_svg_path
+            else:
+                rect_output = output
+
             save_svg_from_png(
                 input_path=input_for_svg,
-                output_path=output,
+                output_path=rect_output,
                 config_path=args.config,
                 merge_runs=not args.no_merge_runs,
                 merge_vertical=not args.no_merge_vertical,
             )
+
+            # 最適化処理
+            if args.optimize:
+                print(f"rect SVG生成完了、最適化を実行中...")
+                from .svg_optimizer import optimize_svg
+
+                # OCR言語をリストに変換
+                ocr_languages = [lang.strip() for lang in args.ocr_languages.split(",")]
+
+                result = optimize_svg(
+                    rect_output,
+                    output,
+                    args.epsilon,
+                    skip_background=args.clean,
+                    snap_gray=args.clean,
+                    gray_tol=3 if args.clean else 0,
+                    min_area=2.0 if args.clean else 0.0,
+                    use_ocr=args.ocr,
+                    ocr_languages=ocr_languages,
+                    ocr_min_confidence=args.ocr_min_confidence,
+                )
+
+                # 一時ファイル削除
+                Path(temp_svg_path).unlink(missing_ok=True)
+
+                print(f"\n最適化結果:")
+                print(f"  入力rect数: {result['input_rects']}")
+                print(f"  出力path数: {result['output_paths']}")
+                print(f"  色数: {result['colors']}")
+                if result.get("text_regions", 0) > 0:
+                    print(f"  テキスト領域数: {result['text_regions']}")
+
             print(f"完了: {output}")
 
             # 一時ファイルの削除
