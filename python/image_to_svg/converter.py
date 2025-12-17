@@ -982,7 +982,8 @@ def create_svg_from_quantized(
 
 def merge_similar_colors(
     image: np.ndarray,
-    threshold: float = 10.0,
+    threshold: float = 5.0,
+    min_pixel_ratio: float = 0.001,
 ) -> np.ndarray:
     """
     類似色をマージして色数を削減
@@ -992,12 +993,14 @@ def merge_similar_colors(
 
     Args:
         image: BGR画像
-        threshold: LAB色空間での色差閾値
+        threshold: LAB色空間での色差閾値（デフォルト5.0、低いほど保守的）
+        min_pixel_ratio: マージ対象の最小ピクセル比率（これ以上の色は保護）
 
     Returns:
         類似色がマージされた画像
     """
     h, w = image.shape[:2]
+    total_pixels = h * w
     pixels = image.reshape(-1, 3)
 
     # ユニーク色と出現回数を取得
@@ -1007,6 +1010,9 @@ def merge_similar_colors(
 
     if len(unique_colors) <= 1:
         return image
+
+    # 最小ピクセル数（これ以上の色は保護）
+    min_pixels = int(total_pixels * min_pixel_ratio)
 
     # BGR → LAB
     unique_colors_lab = cv2.cvtColor(
@@ -1026,6 +1032,10 @@ def merge_similar_colors(
 
         color_lab = unique_colors_lab[idx]
 
+        # この色を処理済みとしてマーク
+        processed[idx] = True
+        mapping[idx] = idx
+
         # 未処理の色との距離を計算
         unprocessed_mask = ~processed
         unprocessed_indices = np.where(unprocessed_mask)[0]
@@ -1036,12 +1046,15 @@ def merge_similar_colors(
         unprocessed_labs = unique_colors_lab[unprocessed_indices]
         distances = np.sqrt(np.sum((unprocessed_labs - color_lab) ** 2, axis=1))
 
-        # 閾値以内の色をマージ
+        # 閾値以内の色を見つける
         similar_mask = distances <= threshold
         similar_indices = unprocessed_indices[similar_mask]
 
-        # 最頻色にマッピング
+        # 類似色をマージ（ただし、十分なピクセル数を持つ色は保護）
         for sim_idx in similar_indices:
+            # この色が十分なピクセル数を持つ場合は保護（マージしない）
+            if counts[sim_idx] >= min_pixels:
+                continue
             mapping[sim_idx] = idx
             processed[sim_idx] = True
 
@@ -1134,7 +1147,7 @@ def process_step_by_step(
     use_vtracer: bool = True,
     vtracer_mode: str = "spline",
     skip_region_absorption: bool = True,
-    color_merge_threshold: float = 10.0,
+    color_merge_threshold: float = 5.0,
     filter_speckle: int = 16,
 ) -> dict:
     """
@@ -1152,7 +1165,7 @@ def process_step_by_step(
         use_vtracer: True=vtracerでSVG生成（ベジェ曲線）、False=従来の直線パス
         vtracer_mode: 'spline'（ベジェ曲線）or 'polygon'（多角形）
         skip_region_absorption: True=小領域吸収をスキップ（デフォルト、高速）
-        color_merge_threshold: 類似色マージの閾値（LAB色空間での距離、デフォルト10.0）
+        color_merge_threshold: 類似色マージの閾値（LAB色空間での距離、デフォルト5.0）
         filter_speckle: vtracerのノイズ除去閾値（デフォルト16、大きいほど小領域を除去）
 
     Returns:

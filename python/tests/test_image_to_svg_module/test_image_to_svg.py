@@ -245,21 +245,21 @@ class TestMergeSimilarColors:
         """同一色は変化しない"""
         # 単色画像
         image = np.full((100, 100, 3), [100, 100, 100], dtype=np.uint8)
-        result = merge_similar_colors(image, threshold=10.0)
+        result = merge_similar_colors(image, threshold=5.0)
 
         assert np.array_equal(result, image)
 
     def test_merge_similar_colors_to_most_frequent(self):
-        """類似色は最頻色にマージされる"""
-        # 上半分: 多数の色 (0, 0, 0)
-        # 下半分: 少数の類似色 (5, 5, 5) - LAB距離で10以内
-        image = np.zeros((100, 100, 3), dtype=np.uint8)
-        image[:60, :] = [0, 0, 0]  # 60%
-        image[60:, :] = [5, 5, 5]  # 40%
+        """類似色は最頻色にマージされる（少数ピクセルのみ）"""
+        # 大部分: (0, 0, 0)
+        # ごく少数の類似色 (2, 2, 2) - 0.1%未満
+        image = np.zeros((1000, 1000, 3), dtype=np.uint8)
+        image[:] = [0, 0, 0]  # 99.9%
+        image[0:10, 0:10] = [2, 2, 2]  # 0.01% - 少数なのでマージ対象
 
-        result = merge_similar_colors(image, threshold=10.0)
+        result = merge_similar_colors(image, threshold=5.0, min_pixel_ratio=0.001)
 
-        # すべて (0, 0, 0) にマージされるべき
+        # 少数ピクセルの類似色がマージされる
         unique_colors = np.unique(result.reshape(-1, 3), axis=0)
         assert len(unique_colors) == 1
 
@@ -270,25 +270,37 @@ class TestMergeSimilarColors:
         image[:50, :] = [0, 0, 255]  # BGR: 赤
         image[50:, :] = [255, 0, 0]  # BGR: 青
 
-        result = merge_similar_colors(image, threshold=10.0)
+        result = merge_similar_colors(image, threshold=5.0)
 
+        unique_colors = np.unique(result.reshape(-1, 3), axis=0)
+        assert len(unique_colors) == 2
+
+    def test_preserve_significant_colors(self):
+        """十分なピクセル数を持つ色は保護される"""
+        # 両方の色が十分なピクセル数を持つ
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        image[:60, :] = [0, 0, 0]  # 60%
+        image[60:, :] = [3, 3, 3]  # 40% - 十分なピクセル数なので保護
+
+        result = merge_similar_colors(image, threshold=5.0, min_pixel_ratio=0.001)
+
+        # 両方の色が保持される（十分なピクセル数があるため）
         unique_colors = np.unique(result.reshape(-1, 3), axis=0)
         assert len(unique_colors) == 2
 
     def test_antialiasing_simulation(self):
         """アンチエイリアス由来の微小な色差がマージされる"""
         # 主要色: (0, 0, 0) - 大きな領域
-        # アンチエイリアス由来: (0, 1, 0), (1, 1, 1), (2, 2, 2) など
-        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        # アンチエイリアス由来: (1, 1, 1), (2, 2, 2) - ごく少数ピクセル
+        image = np.zeros((1000, 1000, 3), dtype=np.uint8)
         image[:] = [0, 0, 0]  # 基本色
-        image[0:5, :] = [0, 1, 0]  # わずかに異なる色
-        image[5:10, :] = [1, 1, 1]
-        image[10:15, :] = [2, 2, 2]
+        image[0:3, 0:3] = [1, 1, 1]  # 0.0009% - アンチエイリアス
+        image[0:3, 3:6] = [2, 2, 2]  # 0.0009% - アンチエイリアス
 
         original_colors = np.unique(image.reshape(-1, 3), axis=0)
-        assert len(original_colors) == 4
+        assert len(original_colors) == 3
 
-        result = merge_similar_colors(image, threshold=10.0)
+        result = merge_similar_colors(image, threshold=5.0, min_pixel_ratio=0.001)
 
         merged_colors = np.unique(result.reshape(-1, 3), axis=0)
         # アンチエイリアス色がマージされて1色になるべき

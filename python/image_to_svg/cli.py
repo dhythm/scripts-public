@@ -23,7 +23,7 @@ def main() -> None:
         print("オプション:")
         print("  --scale N         拡大倍率（デフォルト: 4、大きいほど境界が滑らか）")
         print("  --filter-speckle N  vtracerのノイズ除去閾値（デフォルト: 16、大きいほど小領域を除去）")
-        print("  --color-merge N   類似色マージの閾値（デフォルト: 10.0、LAB色空間）")
+        print("  --color-merge N   類似色マージの閾値（デフォルト: 5.0、LAB色空間、低いほど保守的）")
         print("  --intermediate    各ステップの中間結果をPNGで保存")
         print("  --legacy          従来の直線パスSVG生成を使用（デフォルト: vtracer）")
         print("  --polygon         vtracer使用時に多角形モードを使用（デフォルト: spline）")
@@ -46,7 +46,7 @@ def main() -> None:
     # 値を持つオプションの解析
     upscale_factor = 4  # デフォルト
     filter_speckle = 16  # デフォルト
-    color_merge_threshold = 10.0  # デフォルト
+    color_merge_threshold = 5.0  # デフォルト
     args_filtered = []
     i = 1
     while i < len(sys.argv):
