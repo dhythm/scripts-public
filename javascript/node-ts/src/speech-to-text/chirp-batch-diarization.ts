@@ -24,6 +24,8 @@ interface CliOptions {
   region: string;
   minSpeakers: number;
   maxSpeakers: number;
+  mergedOutput?: string;
+  mergedTimestamps: boolean;
 }
 
 /**
@@ -46,6 +48,8 @@ function parseCliOptions(): CliOptions {
       region: { type: "string", short: "r" },
       "min-speakers": { type: "string" },
       "max-speakers": { type: "string" },
+      "merged-output": { type: "string" },
+      timestamps: { type: "boolean", short: "t" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -94,6 +98,8 @@ function parseCliOptions(): CliOptions {
   const maxSpeakers = values["max-speakers"]
     ? Number(values["max-speakers"])
     : 6;
+  const mergedOutput = values["merged-output"] as string | undefined;
+  const mergedTimestamps = Boolean(values.timestamps);
 
   if (Number.isNaN(minSpeakers) || Number.isNaN(maxSpeakers)) {
     console.error("エラー: --min-speakers と --max-speakers は数値で指定してください");
@@ -119,6 +125,8 @@ function parseCliOptions(): CliOptions {
     region: (values.region as string) || "us",
     minSpeakers,
     maxSpeakers,
+    mergedOutput,
+    mergedTimestamps,
   };
 }
 
@@ -146,6 +154,8 @@ Google Speech-to-Text (chirp_3) BatchRecognize with Diarization
   --region, -r         リージョン (既定: us)
   --min-speakers       話者数の下限 (既定: 2)
   --max-speakers       話者数の上限 (既定: 6)
+  --merged-output      マージ済みテキストを書き出すローカルパス
+  --timestamps, -t     マージ結果に mm:ss 形式の区間を付与
   --help, -h           このヘルプを表示
 
 環境変数:
@@ -163,6 +173,12 @@ function durationToSeconds(
   const seconds = Number(duration?.seconds ?? 0);
   const nanos = Number(duration?.nanos ?? 0);
   return seconds + nanos / 1_000_000_000;
+}
+
+function formatTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m.toString().padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}`;
 }
 
 async function main(): Promise<void> {
@@ -205,6 +221,57 @@ async function main(): Promise<void> {
         maxSpeakerCount: options.maxSpeakers,
       },
     },
+  };
+
+  // stt:merge 相当のマージ結果をここで蓄積する
+  const mergedLines: string[] = [];
+  type Segment = { speaker: string; start?: number; end?: number; text: string };
+  const joinWord = (base: string, word: string): string => {
+    if (!base) return word;
+    const prev = base[base.length - 1];
+    const curr = word[0];
+    const needsSpace =
+      /[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(curr);
+    return needsSpace ? `${base} ${word}` : `${base}${word}`;
+  };
+  const appendMerged = (alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null) => {
+    if (!alt) return;
+    const segments: Segment[] = [];
+
+    for (const w of alt.words ?? []) {
+      const speaker = w.speakerLabel ?? "S?";
+      const start = w.startOffset ? durationToSeconds(w.startOffset) : undefined;
+      const end = w.endOffset ? durationToSeconds(w.endOffset) : undefined;
+      const text = w.word ?? "";
+
+      const last = segments[segments.length - 1];
+      if (last && last.speaker === speaker) {
+        last.text = joinWord(last.text, text);
+        if (start !== undefined && last.start === undefined) last.start = start;
+        if (end !== undefined) last.end = end;
+      } else {
+        segments.push({ speaker, start, end, text });
+      }
+    }
+
+    if (segments.length === 0 && alt.transcript) {
+      mergedLines.push(alt.transcript);
+      return;
+    }
+
+    for (const seg of segments) {
+      if (
+        options.mergedTimestamps &&
+        seg.start !== undefined &&
+        seg.end !== undefined
+      ) {
+        mergedLines.push(
+          `[${seg.speaker} ${formatTime(seg.start)}-${formatTime(seg.end)}] ${seg.text}`
+        );
+      } else {
+        mergedLines.push(`[${seg.speaker}] ${seg.text}`);
+      }
+    }
   };
 
   // 入力ソースを決定（GCS URI かローカルアップロード）
@@ -315,7 +382,21 @@ async function main(): Promise<void> {
           `${speaker} [${start.toFixed(2)}s - ${end.toFixed(2)}s]: ${word.word}`
         );
       });
+
+      appendMerged(alt);
     }
+  }
+
+  if (mergedLines.length > 0) {
+    const mergedText = mergedLines.join("\n");
+    console.log("\n=== マージ済みテキスト (stt:batch) ===");
+    console.log(mergedText);
+    if (options.mergedOutput) {
+      writeFileSync(options.mergedOutput, mergedText, "utf8");
+      console.log(`書き出し: ${options.mergedOutput}`);
+    }
+  } else if (options.mergedOutput) {
+    console.warn("マージ可能な結果がありませんでした。");
   }
 }
 

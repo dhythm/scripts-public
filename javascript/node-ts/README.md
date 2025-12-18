@@ -214,6 +214,31 @@ npm run stt:batch -- \
   --region global
 ```
 
+```bash
+# ローカルファイルをアップロードし、マージ済みテキストをその場で表示・保存する例
+GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
+  --file "./input.m4a" \
+  --bucket your-bucket-name \
+  --language ja-JP \
+  --region asia-northeast1 \
+  --min-speakers 2 \
+  --max-speakers 4 \
+  --chunk-seconds 3300 \
+  --timestamps \
+  --merged-output merged.txt
+```
+
+デフォルト値メモ:
+- `--language`: ja-JP
+- `--region`: us
+- `--min-speakers`: 2
+- `--max-speakers`: 6
+- `--chunk-seconds`: 0（分割しない）
+- `--reencode`: flac
+- `--sample-rate`: 16000
+- `--timestamps`: false
+- `--merged-output`: 未指定（ファイル保存しない）
+
 主なオプション:
 
 | オプション | 説明 |
@@ -226,6 +251,11 @@ npm run stt:batch -- \
 | `--region, -r` | リージョン (既定: global。デフォルト認識器 `_` を使う場合は必ず global になります) |
 | `--min-speakers` | 話者数の下限 (既定: 2) |
 | `--max-speakers` | 話者数の上限 (既定: 6) |
+| `--chunk-seconds` | 分割秒数。0 なら分割しない (既定: 0) |
+| `--reencode` | flac または wav (既定: flac) |
+| `--sample-rate` | 再エンコード時のサンプルレート (既定: 16000) |
+| `--merged-output` | マージ済みテキストを書き出すローカルパス |
+| `--timestamps, -t` | マージ出力に mm:ss の区間を付与 (既定: false) |
 | `--help, -h` | ヘルプを表示 |
 
 実行後、各単語に付与された `speakerTag` と時間情報を標準出力に表示します。StreamingRecognize では話者識別が効かないため、本ツールは BatchRecognize 専用です。
