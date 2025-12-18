@@ -230,13 +230,13 @@ GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
 
 デフォルト値メモ:
 - `--language`: ja-JP
-- `--region`: us
+- `--region`: asia-northeast1
 - `--min-speakers`: 2
 - `--max-speakers`: 6
-- `--chunk-seconds`: 0（分割しない）
+- `--chunk-seconds`: 3300
 - `--reencode`: flac
 - `--sample-rate`: 16000
-- `--timestamps`: false
+- `--timestamps`: true
 - `--merged-output`: 未指定（ファイル保存しない）
 
 主なオプション:
@@ -248,14 +248,14 @@ GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
 | `--bucket, -b` | アップロード先の GCS バケット名（--file と併用） |
 | `--object, -o` | アップロード時のオブジェクト名 (省略時は自動生成) |
 | `--language, -l` | 言語コード (既定: ja-JP) |
-| `--region, -r` | リージョン (既定: global。デフォルト認識器 `_` を使う場合は必ず global になります) |
+| `--region, -r` | リージョン (既定: asia-northeast1) |
 | `--min-speakers` | 話者数の下限 (既定: 2) |
 | `--max-speakers` | 話者数の上限 (既定: 6) |
-| `--chunk-seconds` | 分割秒数。0 なら分割しない (既定: 0) |
+| `--chunk-seconds` | 分割秒数。0 なら分割しない (既定: 3300) |
 | `--reencode` | flac または wav (既定: flac) |
 | `--sample-rate` | 再エンコード時のサンプルレート (既定: 16000) |
 | `--merged-output` | マージ済みテキストを書き出すローカルパス |
-| `--timestamps, -t` | マージ出力に mm:ss の区間を付与 (既定: false) |
+| `--timestamps, -t` | マージ出力に mm:ss の区間を付与 (既定: true) |
 | `--help, -h` | ヘルプを表示 |
 
 実行後、各単語に付与された `speakerTag` と時間情報を標準出力に表示します。StreamingRecognize では話者識別が効かないため、本ツールは BatchRecognize 専用です。

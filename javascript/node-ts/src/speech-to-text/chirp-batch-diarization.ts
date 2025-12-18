@@ -66,7 +66,7 @@ function parseCliOptions(): CliOptions {
   const outputGcsUri = values["output-gcs"] as string | undefined;
   const chunkSeconds = values["chunk-seconds"]
     ? Number(values["chunk-seconds"])
-    : 0;
+    : 3300;
   const ffmpegPath = (values.ffmpeg as string) || "ffmpeg";
   const noChunk = Boolean(values["no-chunk"]);
   const reencodeRaw = (values.reencode as string | undefined)?.toLowerCase();
@@ -99,7 +99,7 @@ function parseCliOptions(): CliOptions {
     ? Number(values["max-speakers"])
     : 6;
   const mergedOutput = values["merged-output"] as string | undefined;
-  const mergedTimestamps = Boolean(values.timestamps);
+  const mergedTimestamps = values.timestamps !== false;
 
   if (Number.isNaN(minSpeakers) || Number.isNaN(maxSpeakers)) {
     console.error("エラー: --min-speakers と --max-speakers は数値で指定してください");
@@ -122,7 +122,7 @@ function parseCliOptions(): CliOptions {
     reencode,
     sampleRate,
     language: (values.language as string) || "ja-JP",
-    region: (values.region as string) || "us",
+    region: (values.region as string) || "asia-northeast1",
     minSpeakers,
     maxSpeakers,
     mergedOutput,
@@ -151,11 +151,12 @@ Google Speech-to-Text (chirp_3) BatchRecognize with Diarization
 
 オプション:
   --language, -l       言語コード (既定: ja-JP)
-  --region, -r         リージョン (既定: us)
+  --region, -r         リージョン (既定: asia-northeast1)
   --min-speakers       話者数の下限 (既定: 2)
   --max-speakers       話者数の上限 (既定: 6)
+  --chunk-seconds      分割秒数 (既定: 3300)。0 なら分割しない
   --merged-output      マージ済みテキストを書き出すローカルパス
-  --timestamps, -t     マージ結果に mm:ss 形式の区間を付与
+  --timestamps, -t     マージ結果に mm:ss 形式の区間を付与 (既定: true)
   --help, -h           このヘルプを表示
 
 環境変数:
