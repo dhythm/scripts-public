@@ -226,6 +226,7 @@ async function main(): Promise<void> {
   // stt:merge 相当のマージ結果をここで蓄積する
   const mergedLines: string[] = [];
   type Segment = { speaker: string; start?: number; end?: number; text: string };
+  let mergedFound = false;
   const joinWord = (base: string, word: string): string => {
     if (!base) return word;
     const prev = base[base.length - 1];
@@ -256,6 +257,7 @@ async function main(): Promise<void> {
 
     if (segments.length === 0 && alt.transcript) {
       mergedLines.push(alt.transcript);
+      mergedFound = true;
       return;
     }
 
@@ -271,6 +273,7 @@ async function main(): Promise<void> {
       } else {
         mergedLines.push(`[${seg.speaker}] ${seg.text}`);
       }
+      mergedFound = true;
     }
   };
 
@@ -384,6 +387,15 @@ async function main(): Promise<void> {
       });
 
       appendMerged(alt);
+    }
+  }
+
+  // inline に結果が無い場合、GCS 出力を再取得してマージを試みる
+  if (!mergedFound && outputPrefix) {
+    console.log("\ninline に結果が無かったため、GCS 出力から再取得してマージします...");
+    const success = await downloadAndMergeFromGcs(outputPrefix, appendMerged);
+    if (!success) {
+      console.warn("GCS 出力を取得できませんでした。権限やプレフィックスを確認してください。");
     }
   }
 
@@ -646,6 +658,59 @@ async function listOutputPrefix(prefix: { bucket: string; prefix: string }) {
   files.forEach((f) =>
     console.log(`- gs://${prefix.bucket}/${f.name} (${f.metadata.size} bytes)`)
   );
+}
+
+/**
+ * GCS 出力に書き出された transcript JSON をダウンロードし、
+ * alternatives[0].words を appendMerged 経由でマージする。
+ * 1件でも処理できれば true を返す。
+ */
+async function downloadAndMergeFromGcs(
+  prefix: { bucket: string; prefix: string },
+  appendMerged: (alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null) => void
+): Promise<boolean> {
+  const storage = new Storage();
+  const [files] = await storage.bucket(prefix.bucket).getFiles({
+    prefix: prefix.prefix,
+  });
+
+  const targets = files
+    .filter((f) => f.name.endsWith(".json"))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (targets.length === 0) {
+    console.warn(
+      `GCS 出力が見つかりませんでした: gs://${prefix.bucket}/${prefix.prefix}`
+    );
+    return false;
+  }
+
+  console.log(`GCS から ${targets.length} 件の transcript JSON を取得してマージします...`);
+
+  for (const f of targets) {
+    try {
+      const [buf] = await f.download();
+      const json = JSON.parse(buf.toString()) as {
+        transcript?: { results?: protos.google.cloud.speech.v2.ISpeechRecognitionResult[] };
+        results?: protos.google.cloud.speech.v2.ISpeechRecognitionResult[] | any;
+      };
+      const results =
+        json.transcript?.results ??
+        (Array.isArray(json.results) ? json.results : []);
+
+      for (const result of results) {
+        appendMerged(result.alternatives?.[0]);
+      }
+    } catch (error) {
+      console.warn(
+        `GCS ファイルの処理に失敗しました (${f.name}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  return true;
 }
 
 /**
