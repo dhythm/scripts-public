@@ -12,6 +12,8 @@
     "test:watch": "vitest",
     "primary-harvest": "tsx src/primary-source-harvester.ts",
     "tts": "tsx src/text-to-speech/cli.ts",
+    "stt:batch": "tsx src/speech-to-text/chirp-batch-diarization.ts",
+    "stt:merge": "tsx src/speech-to-text/merge-transcript.ts",
     "source-origin": "tsx src/source-origin-analyzer.ts"
   },
   "keywords": [
@@ -27,6 +29,8 @@
     "vitest": "^4.0.10"
   },
   "dependencies": {
+    "@google-cloud/speech": "^7.2.1",
+    "@google-cloud/storage": "^7.18.0",
     "node-html-parser": "^7.0.1",
     "openai": "^6.9.1"
   }

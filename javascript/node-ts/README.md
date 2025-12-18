@@ -183,3 +183,49 @@ const result = await textToSpeech(
 console.log(`音声ファイルを生成しました: ${result.outputPath}`);
 console.log(`ファイルサイズ: ${result.sizeBytes} bytes`);
 ```
+
+## Speech-to-Text (chirp_3 BatchRecognize + 話者識別)
+
+Google Cloud Speech-to-Text v2 の `chirp_3` モデルで長尺音声を文字起こしし、話者識別（Diarization）を有効にしたツールです。`BatchRecognize` を利用するため、1 分超の音声や複数ファイルに適しています。
+
+### 前提
+
+- Node.js 18 以上
+- `npm install` 済み
+- 環境変数 `GOOGLE_CLOUD_PROJECT` と認証情報（例: `GOOGLE_APPLICATION_CREDENTIALS`）を設定
+  - もしくは `GOOGLE_APPLICATION_CREDENTIALS_BASE64` にサービスアカウント JSON を Base64 で渡すと、一時ファイルに展開して利用します
+
+### 使い方
+
+```bash
+# Cloud Storage 上の音声を文字起こし（話者2〜4人を想定）
+npm run stt:batch -- \
+  --gcs-uri gs://your-bucket/meeting.flac \
+  --language ja-JP \
+  --region global \
+  --min-speakers 2 \
+  --max-speakers 4
+
+# ローカルの長尺ファイルを GCS へアップロードして実行
+npm run stt:batch -- \
+  --file ./local/meeting.wav \
+  --bucket your-bucket \
+  --language ja-JP \
+  --region global
+```
+
+主なオプション:
+
+| オプション | 説明 |
+| --- | --- |
+| `--gcs-uri, -u` | Cloud Storage の音声 URI (必須) |
+| `--file, -f` | ローカル音声ファイルのパス（指定時は --bucket 必須） |
+| `--bucket, -b` | アップロード先の GCS バケット名（--file と併用） |
+| `--object, -o` | アップロード時のオブジェクト名 (省略時は自動生成) |
+| `--language, -l` | 言語コード (既定: ja-JP) |
+| `--region, -r` | リージョン (既定: global。デフォルト認識器 `_` を使う場合は必ず global になります) |
+| `--min-speakers` | 話者数の下限 (既定: 2) |
+| `--max-speakers` | 話者数の上限 (既定: 6) |
+| `--help, -h` | ヘルプを表示 |
+
+実行後、各単語に付与された `speakerTag` と時間情報を標準出力に表示します。StreamingRecognize では話者識別が効かないため、本ツールは BatchRecognize 専用です。
