@@ -295,17 +295,23 @@ async function main(): Promise<void> {
   };
 
   // 入力ソースを決定（GCS URI かローカルアップロード）
-  const sourceUri =
-    options.gcsUri ??
-    (await prepareLocalSources({
-      filePath: options.filePath!,
-      bucket: options.bucket!,
-      object: options.object,
-      chunkSeconds: options.noChunk ? 0 : options.chunkSeconds,
-      ffmpegPath: options.ffmpegPath,
-      reencode: options.reencode,
-      sampleRate: options.sampleRate,
-    }));
+  // ローカルファイルをアップロードした場合は後で削除するため追跡
+  let uploadedGcsUris: string[] = [];
+  const sourceUri = options.gcsUri
+    ? options.gcsUri
+    : await (async () => {
+        const uris = await prepareLocalSources({
+          filePath: options.filePath!,
+          bucket: options.bucket!,
+          object: options.object,
+          chunkSeconds: options.noChunk ? 0 : options.chunkSeconds,
+          ffmpegPath: options.ffmpegPath,
+          reencode: options.reencode,
+          sampleRate: options.sampleRate,
+        });
+        uploadedGcsUris = Array.isArray(uris) ? uris : [uris];
+        return uris;
+      })();
 
   const client = createSpeechClient(options.region);
 
@@ -431,6 +437,9 @@ async function main(): Promise<void> {
   } else if (options.mergedOutput) {
     console.warn("マージ可能な結果がありませんでした。");
   }
+
+  // アップロードしたオブジェクトと出力先オブジェクトを削除
+  await cleanupGcsObjects(uploadedGcsUris, outputPrefix);
 
   const totalElapsed = performance.now() - mainStartTime;
   console.log(`\n✅ 総処理時間: ${formatElapsed(totalElapsed)}`);
@@ -735,6 +744,65 @@ async function downloadAndMergeFromGcs(
   }
 
   return true;
+}
+
+/**
+ * アップロードした入力ファイルと出力先のオブジェクトを削除する
+ */
+async function cleanupGcsObjects(
+  uploadedUris: string[],
+  outputPrefix?: { bucket: string; prefix: string }
+): Promise<void> {
+  const storage = new Storage();
+  let deletedCount = 0;
+
+  // アップロードした入力ファイルを削除
+  for (const uri of uploadedUris) {
+    try {
+      const { bucket, prefix: objectName } = parseGcsUri(uri);
+      await storage.bucket(bucket).file(objectName).delete();
+      deletedCount++;
+      console.log(`🗑️  削除: ${uri}`);
+    } catch (error) {
+      console.warn(
+        `入力ファイルの削除に失敗しました (${uri}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  // 出力先のオブジェクトを削除
+  if (outputPrefix) {
+    try {
+      const [files] = await storage.bucket(outputPrefix.bucket).getFiles({
+        prefix: outputPrefix.prefix,
+      });
+      for (const file of files) {
+        try {
+          await file.delete();
+          deletedCount++;
+          console.log(`🗑️  削除: gs://${outputPrefix.bucket}/${file.name}`);
+        } catch (error) {
+          console.warn(
+            `出力ファイルの削除に失敗しました (${file.name}): ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `出力先の一覧取得に失敗しました: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  if (deletedCount > 0) {
+    console.log(`🧹 ${deletedCount} 件のオブジェクトを削除しました`);
+  }
 }
 
 /**
