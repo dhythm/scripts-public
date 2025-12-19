@@ -182,7 +182,23 @@ function formatTime(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}`;
 }
 
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  const millis = ms % 1000;
+  if (hours > 0) {
+    return `${hours}時間${minutes}分${seconds}秒`;
+  } else if (minutes > 0) {
+    return `${minutes}分${seconds}秒`;
+  } else {
+    return `${seconds}.${millis.toString().padStart(3, "0")}秒`;
+  }
+}
+
 async function main(): Promise<void> {
+  const mainStartTime = performance.now();
   const options = parseCliOptions();
 
   if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
@@ -311,6 +327,7 @@ async function main(): Promise<void> {
   );
 
   for (const [idx, uri] of sourceUris.entries()) {
+    const chunkStartTime = performance.now();
     const request: protos.google.cloud.speech.v2.IBatchRecognizeRequest = {
       recognizer: recognizerName,
       files: [{ uri }],
@@ -318,7 +335,7 @@ async function main(): Promise<void> {
       recognitionOutputConfig: outputConfig,
     };
 
-    console.log("🎧 BatchRecognize を開始します...");
+    console.log("\n🎧 BatchRecognize を開始します...");
     console.log(`チャンク    : ${idx + 1}/${sourceUris.length}`);
     console.log(`モデル      : ${config.model}`);
     console.log(`言語        : ${options.language}`);
@@ -389,6 +406,9 @@ async function main(): Promise<void> {
 
       appendMerged(alt);
     }
+
+    const chunkElapsed = performance.now() - chunkStartTime;
+    console.log(`\n⏱️  チャンク ${idx + 1} 処理時間: ${formatElapsed(chunkElapsed)}`);
   }
 
   // inline に結果が無い場合、GCS 出力を再取得してマージを試みる
@@ -411,6 +431,9 @@ async function main(): Promise<void> {
   } else if (options.mergedOutput) {
     console.warn("マージ可能な結果がありませんでした。");
   }
+
+  const totalElapsed = performance.now() - mainStartTime;
+  console.log(`\n✅ 総処理時間: ${formatElapsed(totalElapsed)}`);
 }
 
 main().catch((error) => {
