@@ -644,8 +644,8 @@ def main():
     parser.add_argument(
         '--model',
         choices=FasterWhisperTranscriber.MODEL_SIZES,
-        default='base',
-        help='使用するWhisperモデルのサイズ (default: base)'
+        default='large-v2',
+        help='使用するWhisperモデルのサイズ (default: large-v2)'
     )
     
     parser.add_argument(
@@ -665,7 +665,8 @@ def main():
     parser.add_argument(
         '--language',
         type=str,
-        help='音声の言語コード (例: ja, en)。指定しない場合は自動検出'
+        default='ja',
+        help='音声の言語コード (例: ja, en) (default: ja)'
     )
     
     parser.add_argument(
@@ -717,8 +718,8 @@ def main():
         '--temperature',
         type=float,
         nargs='+',
-        default=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-        help='サンプリング温度 (default: 0.0 0.2 0.4 0.6 0.8 1.0)'
+        default=[0.0],
+        help='サンプリング温度 (default: 0.0)'
     )
     
     parser.add_argument(
