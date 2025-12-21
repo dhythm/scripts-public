@@ -645,8 +645,8 @@ def main():
     parser.add_argument(
         '--model',
         choices=FasterWhisperTranscriber.MODEL_SIZES,
-        default='large-v2',
-        help='使用するWhisperモデルのサイズ (default: large-v2)'
+        default='medium',
+        help='使用するWhisperモデルのサイズ (default: medium)'
     )
     
     parser.add_argument(
