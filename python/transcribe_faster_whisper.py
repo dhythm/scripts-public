@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -820,8 +821,12 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
     try:
+        # 処理開始時刻を記録
+        start_time = time.time()
+        model_load_start = time.time()
+
         # 出力ファイルパスを決定
         if args.output:
             output_path = args.output
@@ -839,7 +844,8 @@ def main():
             cpu_threads=args.cpu_threads,
             num_workers=args.num_workers
         )
-        
+        model_load_time = time.time() - model_load_start
+
         # 温度パラメータの処理
         temperature = args.temperature[0] if len(args.temperature) == 1 else args.temperature
 
@@ -862,6 +868,7 @@ def main():
                 vad_parameters = None
 
         # 文字起こし実行
+        transcribe_start = time.time()
         result = transcriber.transcribe(
             args.audio_file,
             language=args.language,
@@ -878,7 +885,8 @@ def main():
             noise_reduce_amount=args.noise_reduce_amount,
             no_speech_threshold=args.no_speech_threshold
         )
-        
+        transcribe_time = time.time() - transcribe_start
+
         # 結果を保存
         transcriber.save_result(
             result,
@@ -902,7 +910,20 @@ def main():
         
         if result.get('language_probability'):
             print(f"言語検出の信頼度: {result['language_probability']:.2%}")
-        
+
+        # 処理時間を表示
+        total_time = time.time() - start_time
+        print(f"\n--- 処理時間 ---")
+        print(f"モデル読み込み: {model_load_time:.1f}秒")
+        print(f"文字起こし: {transcribe_time:.1f}秒")
+        print(f"合計: {total_time:.1f}秒")
+
+        # 実時間比率を計算（音声の長さに対する処理時間の比率）
+        if result.get('duration'):
+            audio_duration = result['duration']
+            realtime_ratio = transcribe_time / audio_duration
+            print(f"実時間比率: {realtime_ratio:.2f}x （1.0未満 = リアルタイムより高速）")
+
     except KeyboardInterrupt:
         print("\n処理が中断されました。")
         sys.exit(1)
