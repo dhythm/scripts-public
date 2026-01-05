@@ -6,6 +6,8 @@ import warnings
 import logging
 from contextlib import redirect_stderr
 import io
+import hashlib
+import re
 
 def extract_text_from_pdf(pdf_path):
     """PDFファイルからテキストを抽出して同じディレクトリに.txtファイルを保存する"""
@@ -30,11 +32,21 @@ def extract_text_from_pdf(pdf_path):
         
         # PDFからテキストを抽出（警告を抑制）
         all_text = ""
+        last_page_hash = None
+        skipped_pages = 0
         with io.StringIO() as buf, redirect_stderr(buf):
             with pdfplumber.open(pdf_path) as pdf:
                 for page_number, page in enumerate(pdf.pages):
                     text = page.extract_text()
                     if text:
+                        # 同一ページ内容の連続重複をスキップ（空白差分を吸収）
+                        normalized = re.sub(r"\s+", " ", text).strip()
+                        page_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+                        if page_hash == last_page_hash:
+                            skipped_pages += 1
+                            continue
+                        last_page_hash = page_hash
+
                         all_text += f"--- Page {page_number + 1} ---\n"
                         all_text += text + "\n\n"
         
@@ -43,6 +55,8 @@ def extract_text_from_pdf(pdf_path):
             output_file.write(all_text)
         
         print(f"テキスト抽出完了！結果は「{output_path}」に保存されました。")
+        if skipped_pages:
+            print(f"重複ページを {skipped_pages} ページスキップしました。")
         
         # 抽出されたテキストが空の場合の警告
         if not all_text.strip():

@@ -25,6 +25,7 @@ import re
 import os
 import time
 import argparse
+import hashlib
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -112,11 +113,39 @@ def proofread_with_llm(
     return text
 
 
+def dedupe_consecutive_pages(pages: List[str]) -> tuple[List[str], int]:
+    """
+    連続する同一内容のページをスキップする
+
+    Args:
+        pages: ページごとのテキスト
+
+    Returns:
+        重複を除去したページリストと、スキップしたページ数
+    """
+    deduped: List[str] = []
+    last_hash: Optional[str] = None
+    skipped = 0
+
+    for page_text in pages:
+        normalized = re.sub(r"\s+", " ", (page_text or "")).strip()
+        page_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
+        if page_hash == last_hash:
+            skipped += 1
+            continue
+
+        last_hash = page_hash
+        deduped.append(page_text)
+
+    return deduped, skipped
+
+
 def extract_pages_text(
     pdf_path: str,
     header_ratio: float = 0.12,
     footer_ratio: float = 0.13
-) -> List[str]:
+) -> tuple[List[str], int]:
     """
     PDFから各ページのテキストをリストで取得
 
@@ -126,7 +155,7 @@ def extract_pages_text(
         footer_ratio: ページ下部の除外比率
 
     Returns:
-        ページごとのテキストのリスト
+        ページごとのテキストのリストと、スキップした重複ページ数
     """
     from pdfminer.high_level import extract_pages
     from pdfminer.layout import LAParams, LTTextBox
@@ -149,7 +178,9 @@ def extract_pages_text(
 
         pages_text.append('\n'.join(page_elements))
 
-    return pages_text
+    pages_text, skipped_pages = dedupe_consecutive_pages(pages_text)
+
+    return pages_text, skipped_pages
 
 
 def extract_text_with_llm(
@@ -169,9 +200,11 @@ def extract_text_with_llm(
         校正済みテキスト
     """
     print("ページ単位でテキストを抽出中...")
-    pages = extract_pages_text(pdf_path)
+    pages, skipped_pages = extract_pages_text(pdf_path)
     total = len(pages)
-    print(f"✓ {total}ページを抽出")
+    print(f"✓ {total + skipped_pages}ページを抽出")
+    if skipped_pages:
+        print(f"✓ 重複ページを {skipped_pages} ページスキップ")
 
     proofread_pages = []
     total_before = 0
@@ -320,27 +353,18 @@ def extract_text_from_pdf(pdf_path: str, exclude_margins: bool = True) -> Option
 
     # pdfminer.sixのextract_text()を試す（レイアウト保持）
     try:
-        from pdfminer.high_level import extract_text
-        from pdfminer.layout import LAParams
-
         print("pdfminer.sixを使用してテキストを抽出中...")
 
-        # LAParams: レイアウト解析のパラメータ
-        laparams = LAParams(
-            detect_vertical=True,  # 縦書きテキストを検出
-            all_texts=True
-        )
-
-        text = extract_text(
-            pdf_path,
-            laparams=laparams
-        )
+        pages, skipped_pages = extract_pages_text(pdf_path)
+        text = '\n\n'.join(pages)
 
         if text and text.strip():
             # ヘッダー/フッターを除去
             if margin_texts:
                 print("ヘッダー/フッターを除去中...")
                 text = remove_margin_texts(text, margin_texts)
+            if skipped_pages:
+                print(f"✓ 重複ページを {skipped_pages} ページスキップ")
             print("✓ pdfminer.sixでの抽出に成功")
             return text
 
@@ -366,9 +390,12 @@ def extract_text_from_pdf(pdf_path: str, exclude_margins: bool = True) -> Option
                 if page_text:
                     text_parts.append(page_text)
 
+            text_parts, skipped_pages = dedupe_consecutive_pages(text_parts)
             text = '\n\n'.join(text_parts)
 
             if text and text.strip():
+                if skipped_pages:
+                    print(f"✓ 重複ページを {skipped_pages} ページスキップ")
                 print("✓ pdfplumberでの抽出に成功")
                 return text
 
@@ -392,9 +419,12 @@ def extract_text_from_pdf(pdf_path: str, exclude_margins: bool = True) -> Option
                 if page_text:
                     text_parts.append(page_text)
 
+            text_parts, skipped_pages = dedupe_consecutive_pages(text_parts)
             text = '\n\n'.join(text_parts)
 
             if text and text.strip():
+                if skipped_pages:
+                    print(f"✓ 重複ページを {skipped_pages} ページスキップ")
                 print("✓ PyPDF2での抽出に成功")
                 return text
 
