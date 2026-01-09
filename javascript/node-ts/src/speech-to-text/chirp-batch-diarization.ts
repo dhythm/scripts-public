@@ -98,7 +98,9 @@ function parseCliOptions(): CliOptions {
   const maxSpeakers = values["max-speakers"]
     ? Number(values["max-speakers"])
     : 6;
-  const mergedOutput = values["merged-output"] as string | undefined;
+  const mergedOutputArg = values["merged-output"] as string | undefined;
+  // デフォルトで元ファイル名.txt を出力
+  const mergedOutput = mergedOutputArg ?? (filePath ? `${filePath.replace(/\.[^.]+$/, "")}.txt` : undefined);
   const mergedTimestamps = values.timestamps !== false;
 
   if (Number.isNaN(minSpeakers) || Number.isNaN(maxSpeakers)) {
@@ -155,7 +157,7 @@ Google Speech-to-Text (chirp_3) BatchRecognize with Diarization
   --min-speakers       話者数の下限 (既定: 2)
   --max-speakers       話者数の上限 (既定: 6)
   --chunk-seconds      分割秒数 (既定: 3300)。0 なら分割しない
-  --merged-output      マージ済みテキストを書き出すローカルパス
+  --merged-output      マージ済みテキストを書き出すローカルパス (既定: 元ファイル名.txt)
   --timestamps, -t     マージ結果に mm:ss 形式の区間を付与 (既定: true)
   --help, -h           このヘルプを表示
 
