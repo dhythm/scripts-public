@@ -393,6 +393,13 @@ async function main(): Promise<void> {
       continue;
     }
 
+    // チャンク区切りマーカーを挿入（2つ目以降のチャンク）
+    if (idx > 0 && transcriptResults.length > 0) {
+      mergedLines.push("");
+      mergedLines.push(`--- チャンク ${idx + 1} 開始 ---`);
+      mergedLines.push("");
+    }
+
     for (const [index, result] of transcriptResults.entries()) {
       const alt = result.alternatives?.[0];
       if (!alt) continue;
