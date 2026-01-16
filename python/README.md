@@ -554,3 +554,35 @@ uv run python google_tts.py --text "こんにちは" --credentials ~/.config/gcl
 | `--rate` | 話速 (0.25〜4.0) | `1.0` |
 | `--pitch` | ピッチ調整 (-20〜20推奨) | `0.0` |
 | `--sample-rate` | サンプルレートをHzで指定 | なし |
+
+## 音声ファイル結合 (merge_audio.py)
+
+複数の音声ファイルを無音を挟んで結合するツールです。
+
+### 使用例
+
+```sh
+# slide1.mp3〜slide9.mp3を2秒の無音を挟んで結合
+uv run python merge_audio.py slide*.mp3 -o combined.mp3
+
+# 無音時間を3秒に変更
+uv run python merge_audio.py slide*.mp3 -o combined.mp3 --silence 3.0
+
+# ソートを無効化（引数の順序で結合）
+uv run python merge_audio.py slide1.mp3 slide3.mp3 slide2.mp3 -o output.mp3 --no-sort
+```
+
+### 主なオプション
+
+| オプション | 説明 | 既定値 |
+|-------------|------|--------|
+| `files` | 結合する音声ファイル（複数指定可、glob対応） | 必須 |
+| `--output, -o` | 出力ファイルパス | 必須 |
+| `--silence, -s` | ファイル間に挿入する無音の長さ（秒） | `2.0` |
+| `--no-sort` | 自然順ソートを無効化 | `False` |
+
+### 特徴
+
+- pydubによる複数形式対応（mp3, wav, ogg, m4a, flac）
+- natsortによる自然順ソート（slide1, slide2, ..., slide10の順序を保証）
+- 無音時間を柔軟に設定可能（0〜60秒）
