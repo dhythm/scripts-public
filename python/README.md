@@ -258,6 +258,7 @@ uv run python transcribe_google_chirp.py lecture.wav \
 
 ##### 1. 非対応フォーマットの注意点
 `audio/mp4a-latm`（LATM パケット化 AAC）は **Speech-to-Text v2 / Chirp 3 では非対応** です。  
+
 この形式をアップロードするとエラーコード `3 (INVALID_ARGUMENT)` が発生します。  
 **事前に WAV 形式へ変換**してから文字起こしを行ってください。
 
@@ -586,3 +587,118 @@ uv run python merge_audio.py slide1.mp3 slide3.mp3 slide2.mp3 -o output.mp3 --no
 - pydubによる複数形式対応（mp3, wav, ogg, m4a, flac）
 - natsortによる自然順ソート（slide1, slide2, ..., slide10の順序を保証）
 - 無音時間を柔軟に設定可能（0〜60秒）
+
+## 音声変換（Voice Conversion）
+
+Seed-VC を使用した zero-shot 音声変換ツール `voice_convert.py` です。短い参照音声（1〜30秒）から声質を借りて、入力音声を別の声に変換します。学習不要で動作します。
+
+セットアップ時に Seed-VC 専用の仮想環境（`~/.cache/seed-vc/.venv`）が自動作成されます。プロジェクト本体の venv とは依存関係を分離しているため、互いのパッケージバージョンが競合しません。
+
+### セットアップ
+
+```sh
+# Seed-VC のクローン + 専用 venv 作成 + 依存関係インストール
+uv run python voice_convert.py setup
+
+# インストール先を指定する場合
+uv run python voice_convert.py setup --path /path/to/seed-vc
+
+# 既存のインストールを更新（git pull + 依存関係再インストール）
+uv run python voice_convert.py setup --update
+```
+
+### 実行例
+
+```sh
+# 単一ファイルの音声変換
+uv run python voice_convert.py convert input.wav reference.wav -o output.wav
+
+# m4a などの形式もそのまま指定可能（自動で WAV に変換されます）
+uv run python voice_convert.py convert input.m4a reference.wav -o output.wav
+
+# 前処理付き（ノイズ除去 + ノーマライズ）
+uv run python voice_convert.py convert input.wav reference.wav --denoise --normalize
+
+# バッチ処理（ディレクトリ内の全音声ファイルを変換）
+uv run python voice_convert.py convert ./inputs/ reference.wav -o ./outputs/
+
+# CUDA GPU で高速・高品質に処理
+uv run python voice_convert.py convert input.wav reference.wav --device cuda --diffusion-steps 50 --fp16
+
+# Seed-VC 付属のデモ参照音声を使って試す
+uv run python voice_convert.py convert input.wav ~/.cache/seed-vc/examples/reference/s1p1.wav -o output.wav
+```
+
+### 主要パラメーター
+
+| パラメーター | 説明 | デフォルト |
+|-----------|------|-----------|
+| `source` | 変換元の音声ファイル（またはディレクトリ） | 必須 |
+| `reference` | 参照音声ファイル（1〜30秒推奨） | 必須 |
+| `--output, -o` | 出力ファイルパス | `{source_stem}_converted.wav` |
+| `--seed-vc-path` | Seed-VC のインストールパス（環境変数 `SEED_VC_PATH` も可） | `~/.cache/seed-vc` |
+| `--device` | 使用デバイス (auto/cuda/cpu) | `auto` |
+| `--diffusion-steps` | 拡散ステップ数（大きいほど高品質・低速） | `25` |
+| `--length-adjust` | 長さ調整係数（<1.0: 早口、>1.0: ゆっくり） | `1.0` |
+| `--inference-cfg-rate` | 推論 CFG レート | `0.7` |
+| `--fp16` | FP16 精度を使用（CUDA 推奨） | `False` |
+| `--normalize` | 音声をノーマライズ | `False` |
+| `--denoise` | ノイズ除去を適用 | `False` |
+| `--gain` | ゲイン調整 (dB) | `0.0` |
+
+### デバイスについて
+
+- **CUDA GPU**: もっとも高速。`--fp16` との併用を推奨
+- **CPU**: GPU がない環境ではこちらが使われます。処理時間は音声の長さに依存しますが、数分程度かかることがあります
+- **MPS (Apple Silicon)**: Seed-VC が使用する PyTorch 2.4 の `torch.autocast` が MPS 未対応のため、自動的に CPU にフォールバックします
+
+### 参照音声のコツ
+
+- **長さ**: 10〜30秒が最適。1秒未満や30秒超は警告が表示されます
+- **品質**: 単一話者、BGM やノイズが少ないクリーンな音声が理想的
+- **形式**: WAV 推奨（mp3, m4a, flac 等も自動変換されます）
+- **デモ音声**: セットアップ後、`~/.cache/seed-vc/examples/reference/` にサンプル音声が含まれています
+
+## OpenVoice による音声 to 音声変換
+
+`open_voice_converter.py` は、既存の読み上げ音声の抑揚や間をできるだけ保ったまま、参照音声の声質へ変換するための CLI です。  
+TTS のアクセントが不自然なケースで、先に人間が読んだ音声や別エンジンで生成した音声を用意し、最後に声質だけを差し替える検証に向いています。
+
+### 前提
+
+- OpenVoice 本体を clone して依存関係を入れる
+- OpenVoice V2 の `checkpoints_v2/converter` を配置する
+- 必要ファイルは `config.json` と `checkpoint.pth`
+
+### セットアップ
+
+```sh
+cd python
+uv run python open_voice_converter.py setup
+```
+
+### 基本的な使い方
+
+```sh
+cd python
+uv run python open_voice_converter.py convert \
+  ./input_narration.wav \
+  ./reference_female.wav \
+  -o ./output_openvoice.wav
+```
+
+### 主なオプション
+
+```sh
+uv run python open_voice_converter.py convert \
+  ./input_narration.wav \
+  ./reference_male.wav \
+  -o ./output_openvoice.wav \
+  --tau 0.25 \
+  --gain 4 \
+  --device cpu
+```
+
+- `reference_*` は目標の声質サンプルです。1話者・数秒から十数秒程度を推奨します。
+- `--tau` は声質変換の強さです。低いほど元音声の質感を残しやすくなります。
+- `--use-vad` は話者埋め込み抽出時に音声区間だけを拾いやすくします。

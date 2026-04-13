@@ -907,7 +907,15 @@ def main():
                 vad_reduction = (1 - result['duration_after_vad'] / result['duration']) * 100
                 print(f"VAD後の長さ: {transcriber._format_timestamp(result['duration_after_vad'])} "
                       f"({vad_reduction:.1f}%削減)")
-        
+                if args.vad_filter and vad_reduction >= 90:
+                    print("\n警告: VADが音声を削減しすぎています。")
+                    print("長時間音声・小声・遠距離マイクでは、発話の大半が無音扱いになることがあります。")
+                    print("まずは以下を試してください:")
+                    print(f"  uv run python {Path(__file__).name} {args.audio_file} --model {args.model} --language {args.language or 'ja'} --no_vad_filter")
+                    print("必要に応じて:")
+                    print("  --vad_threshold 0.20")
+                    print("  --no_speech_threshold 0.9")
+
         if result.get('language_probability'):
             print(f"言語検出の信頼度: {result['language_probability']:.2%}")
 
