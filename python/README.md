@@ -6,6 +6,60 @@
 uv sync
 ```
 
+## バズった英語投稿の収集 (fetch_viral_english_posts.py)
+
+xAI Grok API の **X Search** (`x_search`) を使い、海外で伸びた英語投稿を収集します。X API の Bearer トークンは不要で、`XAI_API_KEY` のみで動作します。
+
+### 必要な環境変数
+
+- `XAI_API_KEY` — [xAI Console](https://console.x.ai/) で発行
+
+`python/.env.example` を `python/.env` にコピーし、キーを設定してください。
+
+### 実行例
+
+```sh
+# 汎用（直近7日・いいね2万相当を目安）
+uv run python fetch_viral_english_posts.py fetch
+
+# AI 界隈のバズ投稿を10件
+uv run python fetch_viral_english_posts.py fetch -p ai -n 10
+
+# スタートアップ界隈 + トピック指定
+uv run python fetch_viral_english_posts.py fetch -p startup -t "YC" --days 14
+
+# JSON / CSV に保存
+uv run python fetch_viral_english_posts.py fetch -p media -o viral.json --csv viral.csv
+
+# プリセット一覧
+uv run python fetch_viral_english_posts.py list-presets
+```
+
+### プリセット
+
+| preset | 内容 |
+|--------|------|
+| `general` | 英語・高エンゲージメント投稿（汎用） |
+| `ai` | AI / GPT / agents |
+| `startup` | startup / SaaS / founder |
+| `media` | メディア付きの超バズ投稿 |
+| `verified` | Verified アカウントの伸び投稿 |
+
+### 主なオプション
+
+| オプション | 説明 | 既定値 |
+|-----------|------|--------|
+| `--preset`, `-p` | 上記プリセット | `general` |
+| `--topic`, `-t` | 追加キーワード | なし |
+| `--count`, `-n` | 取得件数（最大30） | `10` |
+| `--min-likes` | 目安の最低いいね数 | `20000` |
+| `--days` | 直近 N 日を検索 | `7` |
+| `--from-date` / `--to-date` | 日付範囲（YYYY-MM-DD） | なし |
+| `--model` | xAI モデル | `grok-4.1-fast` |
+| `-o` / `--csv` | JSON / CSV 出力先 | なし |
+
+> **補足**: X API と違い `x_search` はセマンティック検索のため、`min_faves:` 演算子はプロンプトのガイドとして使います。いいね数・view 数はモデル推定値です。より厳密な数値が必要な場合は X API v2 の Search API を併用してください。
+
 ```sh
 uv add ruff
 uv run ruff check
