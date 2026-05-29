@@ -31,7 +31,7 @@ app = typer.Typer(
 console = Console()
 
 XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_MODEL = "grok-4.1-fast"
+DEFAULT_MODEL = "grok-4.3"
 
 # X 検索演算子の目安（x_search はセマンティック検索のため、プロンプト用ガイドとして使用）
 PRESETS: dict[str, dict[str, str]] = {
@@ -63,9 +63,16 @@ PRESETS: dict[str, dict[str, str]] = {
 }
 
 X_STATUS_RE = re.compile(
-    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/(?:i/)?status/(\d+)",
+    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/(?:[\w]+/)?status/(\d+)|(?:^|/)status/(\d+)",
     re.IGNORECASE,
 )
+
+
+def extract_status_id_from_url(url: str) -> Optional[str]:
+    match = X_STATUS_RE.search(url)
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
 
 
 @dataclass
@@ -188,7 +195,7 @@ def _parse_json_payload(text: str) -> dict[str, Any]:
 def _normalize_posts(raw: dict[str, Any], citations: list[str]) -> list[ViralPost]:
     posts_raw = raw.get("posts") or []
     citation_status_urls = [
-        u for u in citations if X_STATUS_RE.search(u)
+        u for u in citations if extract_status_id_from_url(u)
     ]
     posts: list[ViralPost] = []
 

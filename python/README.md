@@ -55,10 +55,12 @@ uv run python fetch_viral_english_posts.py list-presets
 | `--min-likes` | 目安の最低いいね数 | `20000` |
 | `--days` | 直近 N 日を検索 | `7` |
 | `--from-date` / `--to-date` | 日付範囲（YYYY-MM-DD） | なし |
-| `--model` | xAI モデル | `grok-4.1-fast` |
+| `--model` | xAI モデル | `grok-4.3` |
 | `-o` / `--csv` | JSON / CSV 出力先 | なし |
 
-> **補足**: X API と違い `x_search` はセマンティック検索のため、`min_faves:` 演算子はプロンプトのガイドとして使います。いいね数・view 数はモデル推定値です。より厳密な数値が必要な場合は X API v2 の Search API を併用してください。
+> **補足**
+> - `x_search` はセマンティック検索のため、`min_faves:` 演算子はプロンプトのガイドとして使います。いいね数・view 数はモデル推定値です。
+> - **xAI API（`XAI_API_KEY`）は X への投稿・リポストはできません。** 検索・要約のみです。投稿には X Developer API + OAuth（例: `xurl`）が別途必要です。
 
 ```sh
 uv add ruff
