@@ -429,7 +429,7 @@ async function main(): Promise<void> {
   // inline に結果が無い場合、GCS 出力を再取得してマージを試みる
   if (!mergedFound && outputPrefix) {
     console.log("\ninline に結果が無かったため、GCS 出力から再取得してマージします...");
-    const success = await downloadAndMergeFromGcs(outputPrefix, appendMerged);
+    const success = await downloadAndMergeFromGcs(outputPrefix, appendMerged, mergedLines);
     if (!success) {
       console.warn("GCS 出力を取得できませんでした。権限やプレフィックスを確認してください。");
     }
@@ -709,7 +709,8 @@ async function listOutputPrefix(prefix: { bucket: string; prefix: string }) {
  */
 async function downloadAndMergeFromGcs(
   prefix: { bucket: string; prefix: string },
-  appendMerged: (alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null) => void
+  appendMerged: (alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null) => void,
+  mergedLines: string[]
 ): Promise<boolean> {
   const storage = new Storage();
   const [files] = await storage.bucket(prefix.bucket).getFiles({
@@ -729,7 +730,14 @@ async function downloadAndMergeFromGcs(
 
   console.log(`GCS から ${targets.length} 件の transcript JSON を取得してマージします...`);
 
-  for (const f of targets) {
+  for (const [idx, f] of targets.entries()) {
+    // チャンク区切りマーカーを挿入（2つ目以降のチャンク）
+    if (idx > 0 && mergedLines.length > 0) {
+      mergedLines.push("");
+      mergedLines.push(`--- チャンク ${idx + 1} 開始 ---`);
+      mergedLines.push("");
+    }
+
     try {
       const [buf] = await f.download();
       const json = JSON.parse(buf.toString()) as {
