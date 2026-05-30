@@ -719,8 +719,10 @@ def main():
         '--temperature',
         type=float,
         nargs='+',
-        default=[0.0],
-        help='サンプリング温度 (default: 0.0)'
+        default=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        help='サンプリング温度。複数指定すると順にフォールバックし、'
+             'リピート等のハルシネーションから脱出しやすくなる '
+             '(default: 0.0 0.2 0.4 0.6 0.8 1.0)'
     )
     
     parser.add_argument(
