@@ -311,12 +311,12 @@ class FasterWhisperTranscriber:
         temperature: Union[float, List[float]] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         compression_ratio_threshold: float = 2.4,
         log_prob_threshold: float = -1.0,
-        no_speech_threshold: float = 0.6,
+        no_speech_threshold: float = 0.9,
         initial_prompt: Optional[str] = None,
         word_timestamps: bool = False,
         vad_filter: bool = True,
         vad_parameters: Optional[Dict] = None,
-        normalize: bool = False,
+        normalize: bool = True,
         gain_db: float = 0,
         denoise: bool = False,
         noise_reduce_amount: float = 0.8
@@ -365,14 +365,24 @@ class FasterWhisperTranscriber:
             audio_path = input_path
 
         # デフォルトVADパラメータ（小さい音声に最適化）
-        if vad_parameters is None and vad_filter:
-            vad_parameters = {
-                'threshold': 0.30,              # 小さい音声を検出（デフォルト0.5→0.3）
-                'min_speech_duration_ms': 100,  # 短い発話も保持（デフォルト0→100）
-                'min_silence_duration_ms': 1000,# 短い無音で分割しない（デフォルト2000→1000）
-                'speech_pad_ms': 400            # 音声の前後を保護（デフォルト400）
+        if vad_filter:
+            default_vad_parameters = {
+                'threshold': 0.20,              # 小さい音声を検出（デフォルト0.5→0.2）
+                'min_speech_duration_ms': 50,   # 短い発話も保持
+                'min_silence_duration_ms': 800, # 短い無音で分割しない
+                'speech_pad_ms': 800            # 音声の前後を保護
             }
-            print(f"VADパラメータ（小さい音声用）: threshold={vad_parameters['threshold']}")
+            if vad_parameters:
+                vad_parameters = {**default_vad_parameters, **vad_parameters}
+            else:
+                vad_parameters = default_vad_parameters
+            print(
+                "VADパラメータ（小さい音声用）: "
+                f"threshold={vad_parameters['threshold']}, "
+                f"min_speech={vad_parameters['min_speech_duration_ms']}ms, "
+                f"min_silence={vad_parameters['min_silence_duration_ms']}ms, "
+                f"speech_pad={vad_parameters['speech_pad_ms']}ms"
+            )
 
         # 一時ファイルパスを保持
         temp_file = None
@@ -742,7 +752,7 @@ def main():
     parser.add_argument(
         '--vad_threshold',
         type=float,
-        help='VAD閾値（0-1）。低いほど敏感（小さい音声を検出）。指定しない場合は0.30'
+        help='VAD閾値（0-1）。低いほど敏感（小さい音声を検出）。指定しない場合は0.20'
     )
 
     parser.add_argument(
@@ -772,7 +782,15 @@ def main():
     parser.add_argument(
         '--normalize',
         action='store_true',
-        help='音声をピークノーマライズ（-3.0 dBFSに調整）'
+        default=True,
+        help='音声をピークノーマライズ（-3.0 dBFSに調整）(default: True)'
+    )
+
+    parser.add_argument(
+        '--no_normalize',
+        dest='normalize',
+        action='store_false',
+        help='音声のピークノーマライズを無効化'
     )
 
     parser.add_argument(
@@ -798,8 +816,8 @@ def main():
     parser.add_argument(
         '--no_speech_threshold',
         type=float,
-        default=0.6,
-        help='Whisper側の無音判定閾値。1.0に近づけると無音除外を緩和 (default: 0.6)'
+        default=0.9,
+        help='Whisper側の無音判定閾値。1.0に近づけると無音除外を緩和 (default: 0.9)'
     )
 
     parser.add_argument(
@@ -915,8 +933,9 @@ def main():
                     print("まずは以下を試してください:")
                     print(f"  uv run python {Path(__file__).name} {args.audio_file} --model {args.model} --language {args.language or 'ja'} --no_vad_filter")
                     print("必要に応じて:")
-                    print("  --vad_threshold 0.20")
-                    print("  --no_speech_threshold 0.9")
+                    print("  --vad_threshold 0.15")
+                    print("  --vad_speech_pad 1000")
+                    print("  --no_speech_threshold 0.95")
 
         if result.get('language_probability'):
             print(f"言語検出の信頼度: {result['language_probability']:.2%}")

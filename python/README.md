@@ -155,18 +155,18 @@ uv run python transcribe_faster_whisper.py input.mp3 --format vtt --output subti
 ##### 1. 音声が小さい・遠い場合
 
 ```sh
-# ノーマライズを使用（音量を自動調整）
-uv run python transcribe_faster_whisper.py recording.m4a --normalize
+# デフォルトでノーマライズと小声向けVADを使用
+uv run python transcribe_faster_whisper.py recording.m4a
 
-# ノーマライズ + VAD閾値を下げる（より敏感に）
-uv run python transcribe_faster_whisper.py recording.m4a --normalize --vad_threshold 0.25
+# さらにVAD閾値を下げる（より敏感に）
+uv run python transcribe_faster_whisper.py recording.m4a --vad_threshold 0.15
 ```
 
 ##### 2. ノイズが多い環境の場合
 
 ```sh
 # ノイズ除去 + ノーマライズ（推奨）
-uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --normalize --noise_reduce_amount 0.5
+uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_reduce_amount 0.5
 
 # ノイズ除去の強度を調整（0.0-1.0、デフォルト0.8）
 uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_reduce_amount 0.6
@@ -178,9 +178,8 @@ uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_red
 # ノイズ除去 + ノーマライズ + VAD調整の組み合わせ
 uv run python transcribe_faster_whisper.py difficult_audio.m4a \
   --denoise \
-  --normalize \
   --noise_reduce_amount 0.5 \
-  --vad_threshold 0.3
+  --vad_threshold 0.15
 ```
 
 ##### 4. 手動でゲインを調整したい場合
@@ -211,7 +210,7 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 
 | オプション | 説明 | デフォルト | 推奨値 |
 |-----------|------|-----------|--------|
-| `--normalize` | 音声をピークノーマライズ（-3.0 dBFS） | なし | 音声が小さい場合に推奨 |
+| `--normalize` / `--no_normalize` | 音声をピークノーマライズ（-3.0 dBFS） | 有効 | 無効化したい場合のみ `--no_normalize` |
 | `--gain` | ゲイン調整(dB)。正の値で音量アップ | 0 | 10-15 dB |
 | `--denoise` | ノイズ除去を適用 | なし | ノイズが多い場合に推奨 |
 | `--noise_reduce_amount` | ノイズ除去の強度（0.0-1.0） | 0.8 | 0.5-0.6（強すぎると音声劣化） |
@@ -220,10 +219,10 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 
 | オプション | 説明 | デフォルト | 推奨値 |
 |-----------|------|-----------|--------|
-| `--vad_threshold` | VAD閾値（0-1）。低いほど敏感 | 0.30 | 0.25-0.35（小さい音声用） |
-| `--vad_min_speech_duration` | 最小音声長(ms) | 100 | 100-300 |
-| `--vad_min_silence_duration` | 最小無音長(ms) | 1000 | 800-1500 |
-| `--vad_speech_pad` | 音声の前後パディング(ms) | 400 | 400-600 |
+| `--vad_threshold` | VAD閾値（0-1）。低いほど敏感 | 0.20 | 0.15-0.25（小さい音声用） |
+| `--vad_min_speech_duration` | 最小音声長(ms) | 50 | 30-100 |
+| `--vad_min_silence_duration` | 最小無音長(ms) | 800 | 600-1200 |
+| `--vad_speech_pad` | 音声の前後パディング(ms) | 800 | 800-1200 |
 | `--no_vad_filter` | VADフィルタを無効化 | - | デバッグ時のみ |
 
 ##### 出力オプション
@@ -405,8 +404,8 @@ uv run python transcribe_google_chirp.py sample.m4a \
 
 #### パラメータ調整のコツ
 
-1. **まず`--normalize`を試す**
-   - 音声が小さい場合の最も簡単な解決策
+1. **ノーマライズはデフォルトで有効**
+   - 音声が小さい場合の基本対策として自動適用
    - ノイズも増幅されるので注意
 
 2. **ノイズが多い場合は`--denoise`**
@@ -414,7 +413,7 @@ uv run python transcribe_google_chirp.py sample.m4a \
    - 強すぎると音声の質が劣化するので注意
 
 3. **VAD閾値の調整**
-   - 音声が削減されすぎる場合：`--vad_threshold 0.25`
+   - 音声が削減されすぎる場合：`--vad_threshold 0.15`
    - ノイズを拾いすぎる場合：`--vad_threshold 0.35`
 
 4. **処理の順序**
@@ -457,7 +456,6 @@ uv run python transcribe_google_chirp.py sample.m4a \
      --model medium \
      --language ja \
      --denoise \
-     --normalize \
      --noise_reduce_amount 0.3 \
      --no_vad_filter
    ```
@@ -474,14 +472,14 @@ uv run python transcribe_google_chirp.py sample.m4a \
 1. **VAD閾値を下げる**
    ```sh
    uv run python transcribe_faster_whisper.py recording.m4a \
-     --normalize \
-     --vad_threshold 0.20
+     --vad_threshold 0.15 \
+     --vad_speech_pad 1000 \
+     --no_speech_threshold 0.95
    ```
 
 2. **VADを完全に無効化**
    ```sh
    uv run python transcribe_faster_whisper.py recording.m4a \
-     --normalize \
      --no_vad_filter
    ```
 
