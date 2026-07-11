@@ -31,6 +31,50 @@ try:
 except ImportError:
     NOISEREDUCE_AVAILABLE = False
 
+# VAD閾値の自動選択で試す候補（高い順）。高いほど無音を多く削れる
+VAD_THRESHOLD_CANDIDATES = [0.50, 0.30, 0.15, 0.05]
+# 最大検出量に対してこの割合以上を拾える閾値のうち、最も高いものを採用する
+VAD_AUTO_COVERAGE = 0.95
+
+
+def choose_vad_threshold(
+    scan_results: List[tuple],
+    coverage: float = VAD_AUTO_COVERAGE
+) -> float:
+    """
+    VADスキャン結果から最適な閾値を選択する
+
+    最も低い閾値で検出された音声量を「取りこぼしのない基準」とみなし、
+    その coverage 以上を検出できる最も高い閾値を返す。
+    高い閾値ほど無音のスキップ効率が良いため、カバレッジを満たす範囲で
+    最大の閾値を選ぶことで「取りこぼし防止」と「効率」を両立する。
+
+    Args:
+        scan_results: (閾値, 検出音声秒数) のリスト
+        coverage: 最大検出量に対する必要カバレッジ（0より大きく1以下）
+
+    Returns:
+        選択された閾値
+    """
+    if not scan_results:
+        raise ValueError("スキャン結果が空です")
+    if not 0 < coverage <= 1:
+        raise ValueError(f"coverageは(0, 1]の範囲で指定してください: {coverage}")
+
+    max_speech = max(speech for _, speech in scan_results)
+    if max_speech == 0:
+        # どの閾値でも音声が検出されない場合は最も高い閾値を返す
+        return max(threshold for threshold, _ in scan_results)
+
+    qualified = [
+        threshold for threshold, speech in scan_results
+        if speech >= coverage * max_speech
+    ]
+    if qualified:
+        return max(qualified)
+    # 数値誤差等でどれも満たさない場合は最も低い閾値（最大検出）を返す
+    return min(threshold for threshold, _ in scan_results)
+
 
 class FasterWhisperTranscriber:
     """Faster-Whisperを使用した音声文字起こしクラス"""
@@ -237,6 +281,78 @@ class FasterWhisperTranscriber:
         print("ノイズ除去が完了しました。")
         return denoised_audio
 
+    def scan_vad_speech_durations(
+        self,
+        wav_path: Path,
+        thresholds: List[float],
+        vad_parameters: Dict
+    ) -> List[tuple]:
+        """
+        文字起こしせずにVADのみを閾値別に実行し、検出音声量を計測する
+
+        Silero VADは軽量（54分の音声でも閾値1つあたり数秒程度）なため、
+        本処理の前に実行して閾値を調整するコストは小さい。
+
+        Args:
+            wav_path: 音声ファイルのパス
+            thresholds: 試す閾値のリスト
+            vad_parameters: threshold以外のVADパラメータ
+
+        Returns:
+            (閾値, 検出音声秒数) のリスト
+        """
+        from faster_whisper.audio import decode_audio
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        sampling_rate = 16000
+        audio = decode_audio(str(wav_path), sampling_rate=sampling_rate)
+
+        results = []
+        for threshold in thresholds:
+            options = VadOptions(
+                threshold=threshold,
+                min_speech_duration_ms=vad_parameters.get('min_speech_duration_ms', 100),
+                min_silence_duration_ms=vad_parameters.get('min_silence_duration_ms', 1000),
+                speech_pad_ms=vad_parameters.get('speech_pad_ms', 400),
+            )
+            timestamps = get_speech_timestamps(audio, vad_options=options)
+            speech_sec = sum(t['end'] - t['start'] for t in timestamps) / sampling_rate
+            results.append((threshold, speech_sec))
+
+        return results
+
+    def _auto_select_vad_threshold(
+        self,
+        wav_path: Path,
+        vad_parameters: Dict
+    ) -> float:
+        """
+        事前VADスキャンで最適な閾値を選択し、結果を表示する
+
+        スキャンに失敗した場合は従来のデフォルト値(0.30)にフォールバックする。
+        """
+        fallback_threshold = 0.30
+        try:
+            print("VAD閾値を自動選択中（事前スキャン）...")
+            scan_start = time.time()
+            scan_results = self.scan_vad_speech_durations(
+                wav_path, VAD_THRESHOLD_CANDIDATES, vad_parameters
+            )
+            chosen = choose_vad_threshold(scan_results)
+
+            max_speech = max(speech for _, speech in scan_results)
+            for threshold, speech in scan_results:
+                marker = ' ←選択' if threshold == chosen else ''
+                print(f"  threshold={threshold:.2f}: 検出 {speech/60:.1f}分{marker}")
+            if max_speech == 0:
+                print("  警告: どの閾値でも音声が検出されませんでした。")
+            print(f"事前スキャン完了 ({time.time() - scan_start:.1f}秒)")
+            return chosen
+        except Exception as e:
+            print(f"警告: VAD事前スキャンに失敗しました ({e})。"
+                  f"閾値 {fallback_threshold} を使用します。")
+            return fallback_threshold
+
     def convert_to_wav_if_needed(
         self,
         file_path: Path,
@@ -316,6 +432,7 @@ class FasterWhisperTranscriber:
         word_timestamps: bool = False,
         vad_filter: bool = True,
         vad_parameters: Optional[Dict] = None,
+        vad_auto_threshold: bool = True,
         normalize: bool = False,
         gain_db: float = 0,
         denoise: bool = False,
@@ -340,6 +457,8 @@ class FasterWhisperTranscriber:
             word_timestamps: 単語レベルのタイムスタンプを生成
             vad_filter: Voice Activity Detectionフィルタを使用
             vad_parameters: VADパラメータ
+            vad_auto_threshold: VAD閾値を事前スキャンで自動選択する
+                （vad_parametersでthresholdが明示された場合は無効）
             normalize: 音声をピークノーマライズ
             gain_db: ゲイン調整(dB)
             denoise: ノイズ除去を適用
@@ -365,14 +484,13 @@ class FasterWhisperTranscriber:
             audio_path = input_path
 
         # デフォルトVADパラメータ（小さい音声に最適化）
-        if vad_parameters is None and vad_filter:
-            vad_parameters = {
-                'threshold': 0.30,              # 小さい音声を検出（デフォルト0.5→0.3）
-                'min_speech_duration_ms': 100,  # 短い発話も保持（デフォルト0→100）
-                'min_silence_duration_ms': 1000,# 短い無音で分割しない（デフォルト2000→1000）
-                'speech_pad_ms': 400            # 音声の前後を保護（デフォルト400）
-            }
-            print(f"VADパラメータ（小さい音声用）: threshold={vad_parameters['threshold']}")
+        threshold_is_explicit = False
+        if vad_filter:
+            vad_parameters = dict(vad_parameters) if vad_parameters else {}
+            threshold_is_explicit = 'threshold' in vad_parameters
+            vad_parameters.setdefault('min_speech_duration_ms', 100)  # 短い発話も保持
+            vad_parameters.setdefault('min_silence_duration_ms', 1000)  # 短い無音で分割しない
+            vad_parameters.setdefault('speech_pad_ms', 400)  # 音声の前後を保護
 
         # 一時ファイルパスを保持
         temp_file = None
@@ -388,7 +506,18 @@ class FasterWhisperTranscriber:
             )
             if wav_path != audio_path:
                 temp_file = wav_path
-            
+
+            # VAD閾値の決定（明示指定がなければ事前スキャンで自動選択）
+            if vad_filter and not threshold_is_explicit:
+                if vad_auto_threshold:
+                    vad_parameters['threshold'] = self._auto_select_vad_threshold(
+                        wav_path, vad_parameters
+                    )
+                else:
+                    vad_parameters['threshold'] = 0.30
+            if vad_filter:
+                print(f"VADパラメータ: threshold={vad_parameters['threshold']}")
+
             # 文字起こし実行
             print(f"文字起こしを開始します...")
             if language:
@@ -742,7 +871,15 @@ def main():
     parser.add_argument(
         '--vad_threshold',
         type=float,
-        help='VAD閾値（0-1）。低いほど敏感（小さい音声を検出）。指定しない場合は0.30'
+        help='VAD閾値（0-1）。低いほど敏感（小さい音声を検出）。'
+             '指定しない場合は事前スキャンで自動選択'
+    )
+
+    parser.add_argument(
+        '--no_vad_auto_threshold',
+        dest='vad_auto_threshold',
+        action='store_false',
+        help='VAD閾値の自動選択（事前スキャン）を無効化し、0.30を使用'
     )
 
     parser.add_argument(
@@ -881,6 +1018,7 @@ def main():
             word_timestamps=args.word_timestamps,
             vad_filter=args.vad_filter,
             vad_parameters=vad_parameters,
+            vad_auto_threshold=args.vad_auto_threshold,
             normalize=args.normalize,
             gain_db=args.gain,
             denoise=args.denoise,
@@ -910,12 +1048,12 @@ def main():
                 print(f"VAD後の長さ: {transcriber._format_timestamp(result['duration_after_vad'])} "
                       f"({vad_reduction:.1f}%削減)")
                 if args.vad_filter and vad_reduction >= 90:
-                    print("\n警告: VADが音声を削減しすぎています。")
-                    print("長時間音声・小声・遠距離マイクでは、発話の大半が無音扱いになることがあります。")
-                    print("まずは以下を試してください:")
+                    print("\n警告: VADによる削減率が90%を超えています。")
+                    print("閾値の自動選択が有効な場合、録音の大半が実際に無音である可能性が高いですが、")
+                    print("取りこぼしが疑われる場合は以下を試してください:")
                     print(f"  uv run python {Path(__file__).name} {args.audio_file} --model {args.model} --language {args.language or 'ja'} --no_vad_filter")
                     print("必要に応じて:")
-                    print("  --vad_threshold 0.20")
+                    print("  --vad_threshold 0.05")
                     print("  --no_speech_threshold 0.9")
 
         if result.get('language_probability'):
