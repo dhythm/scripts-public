@@ -6,6 +6,43 @@
 uv sync
 ```
 
+## 音声の無音区間を削除（remove_silence.py）
+
+室内収録など、発話と無音が明確な音声から長い無音区間を削除し、発話部分だけを連結します。文字起こしやAI APIは使用しません。
+
+```sh
+# 同じ場所に input_speech.m4a を出力
+uv run python remove_silence.py input.m4a
+
+# 出力先を指定
+uv run python remove_silence.py input.wav -o output.wav
+
+# まず検出区間だけを確認
+uv run python remove_silence.py input.m4a --dry-run --list-segments
+```
+
+既定では、`-40 dBFS`以下の状態が1秒以上続いた区間を無音とみなし、発話の前後を250 msずつ残します。生活音まで残る場合は、しきい値を上げてください。
+
+```sh
+# より積極的に静かな生活音を削る
+uv run python remove_silence.py input.m4a --silence-threshold -35
+
+# 長い間だけ削り、発話前後の余白を広めに残す
+uv run python remove_silence.py input.m4a --min-silence 1500 --keep-silence 400
+```
+
+主なオプション:
+
+| オプション | 既定値 | 説明 |
+|---|---:|---|
+| `--silence-threshold` | `-40` | 無音とみなす音量（dBFS）。高くするほど積極的に削除 |
+| `--min-silence` | `1000` | 削除対象にする無音の最短時間（ms） |
+| `--keep-silence` | `250` | 発話の前後に残す余白（ms） |
+| `--min-speech` | `150` | 残す音の最短時間（ms）。短い物音の除外に利用 |
+| `--fade` | `10` | 連結点のクロスフェード（ms） |
+
+MP3・M4AなどWAV以外の読み書きにはffmpegが必要です。
+
 ## バズった英語投稿の収集 (fetch_viral_english_posts.py)
 
 xAI Grok API の **X Search** (`x_search`) を使い、海外で伸びた英語投稿を収集します。X API の Bearer トークンは不要で、`XAI_API_KEY` のみで動作します。
