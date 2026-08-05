@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 from faster_whisper import WhisperModel
+from faster_whisper.audio import decode_audio
+from faster_whisper.vad import VadOptions, get_speech_timestamps
 from pydub import AudioSegment
 from tqdm import tqdm
 
@@ -263,7 +265,7 @@ class FasterWhisperTranscriber:
         if file_path.suffix.lower() == '.wav' and not needs_processing:
             return file_path
 
-        print(f"音声ファイルをWAV形式に変換中...")
+        print("音声ファイルをWAV形式に変換中...")
         audio = AudioSegment.from_file(str(file_path))
 
         # ノイズ除去（他の処理の前に実行）
@@ -298,6 +300,35 @@ class FasterWhisperTranscriber:
         print("変換が完了しました。")
 
         return temp_wav_path
+
+    def preview_vad(
+        self,
+        audio_path: Path,
+        vad_parameters: Optional[Dict] = None
+    ) -> Dict[str, float]:
+        """文字起こし前にVAD適用後の音声長を見積もる。"""
+        sampling_rate = 16000
+        audio = decode_audio(str(audio_path), sampling_rate=sampling_rate)
+        options = VadOptions(**(vad_parameters or {}))
+        speech_chunks = get_speech_timestamps(audio, options)
+
+        original_duration = len(audio) / sampling_rate
+        duration_after_vad = sum(
+            chunk['end'] - chunk['start'] for chunk in speech_chunks
+        ) / sampling_rate
+        removed_duration = original_duration - duration_after_vad
+        reduction_percent = (
+            removed_duration / original_duration * 100
+            if original_duration > 0
+            else 0.0
+        )
+
+        return {
+            'duration': original_duration,
+            'duration_after_vad': duration_after_vad,
+            'removed_duration': removed_duration,
+            'reduction_percent': reduction_percent,
+        }
     
     def transcribe(
         self,
@@ -398,9 +429,28 @@ class FasterWhisperTranscriber:
             )
             if wav_path != audio_path:
                 temp_file = wav_path
+
+            if vad_filter:
+                vad_preview = self.preview_vad(wav_path, vad_parameters)
+                print("\n--- VAD事前確認 ---")
+                print(
+                    f"元の長さ: {self._format_timestamp(vad_preview['duration'])} "
+                    f"({vad_preview['duration']:.1f}秒)"
+                )
+                print(
+                    "VAD後の見込み: "
+                    f"{self._format_timestamp(vad_preview['duration_after_vad'])} "
+                    f"({vad_preview['duration_after_vad']:.1f}秒)"
+                )
+                print(
+                    f"削除見込み: {self._format_timestamp(vad_preview['removed_duration'])} "
+                    f"({vad_preview['removed_duration']:.1f}秒 / "
+                    f"{vad_preview['reduction_percent']:.1f}%削減)"
+                )
+                print("設定に問題があれば Ctrl+C で中断してください。\n")
             
             # 文字起こし実行
-            print(f"文字起こしを開始します...")
+            print("文字起こしを開始します...")
             if language:
                 print(f"言語: {language}")
             else:
@@ -917,7 +967,7 @@ def main():
         )
         
         # 簡単な統計情報を表示
-        print(f"\n--- 統計情報 ---")
+        print("\n--- 統計情報 ---")
         print(f"文字数: {len(result['text'])} 文字")
         print(f"セグメント数: {len(result['segments'])}")
         
@@ -942,7 +992,7 @@ def main():
 
         # 処理時間を表示
         total_time = time.time() - start_time
-        print(f"\n--- 処理時間 ---")
+        print("\n--- 処理時間 ---")
         print(f"モデル読み込み: {model_load_time:.1f}秒")
         print(f"文字起こし: {transcribe_time:.1f}秒")
         print(f"合計: {total_time:.1f}秒")

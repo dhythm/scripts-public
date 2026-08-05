@@ -187,6 +187,8 @@ uv run python transcribe_faster_whisper.py input.mp4 --format json --word_timest
 uv run python transcribe_faster_whisper.py input.mp3 --format vtt --output subtitles.vtt
 ```
 
+VADが有効な場合、文字起こしを始める前に元の長さ・VAD後の見込み・削除秒数と削減率を表示します。削りすぎだと判断した場合は `Ctrl+C` で中断し、VADパラメータを調整して再実行できます。
+
 #### ユースケース別の使用方法
 
 ##### 1. 音声が小さい・遠い場合
