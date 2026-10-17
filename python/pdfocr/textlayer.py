@@ -1,10 +1,11 @@
 """PDFのテキスト層の抽出と、OCRが必要かどうかの判定"""
 
 import re
+from collections import Counter
 from pathlib import Path
-from typing import Iterable, List, Tuple, Union
+from typing import Iterable, List, Set, Tuple, Union
 
-# ページ上部・下部のこの比率の領域を、柱やページ番号とみなして除外する
+# ページ上部・下部のこの比率の帯にある柱（ランニングヘッド）とページ番号を除外する
 DEFAULT_HEADER_RATIO = 0.12
 DEFAULT_FOOTER_RATIO = 0.13
 
@@ -72,25 +73,63 @@ def needs_ocr(text: str) -> bool:
     return expected / len(without_cid) < MIN_EXPECTED_RATIO
 
 
+def _band_key(text: str) -> str:
+    """柱の比較用に、ページ番号などの数字と余分な空白を取り除く"""
+    return re.sub(r'\s+', ' ', re.sub(r'\d+', '', text)).strip()
+
+
+def _in_margin_band(y0: float, y1: float, page_height: float, header_ratio: float, footer_ratio: float) -> bool:
+    """テキストボックスがページ上端または下端の帯に完全に収まっているか"""
+    return y0 >= page_height * (1 - header_ratio) or y1 <= page_height * footer_ratio
+
+
+def find_running_heads(
+    pages: Iterable[Tuple[float, Iterable[Box]]],
+    header_ratio: float = DEFAULT_HEADER_RATIO,
+    footer_ratio: float = DEFAULT_FOOTER_RATIO,
+) -> Set[str]:
+    """
+    2ページ以上の上端・下端の帯に繰り返し現れるテキストを柱（ランニングヘッド）として返す
+
+    Args:
+        pages: (ページの高さ, テキストボックスのリスト) のリスト
+    """
+    counts: Counter = Counter()
+    for page_height, boxes in pages:
+        keys = {
+            _band_key(text) for _x0, y0, _x1, y1, text in boxes
+            if _in_margin_band(y0, y1, page_height, header_ratio, footer_ratio) and _band_key(text)
+        }
+        counts.update(keys)
+    return {key for key, count in counts.items() if count >= 2}
+
+
 def select_body_boxes(
     boxes: Iterable[Box],
     page_height: float,
     header_ratio: float = DEFAULT_HEADER_RATIO,
     footer_ratio: float = DEFAULT_FOOTER_RATIO,
+    running_heads: Set[str] = frozenset(),
 ) -> List[str]:
     """
-    ヘッダー/フッター領域にかからないテキストボックスの文字列を返す
+    柱とページ番号を除いたテキストボックスの文字列を返す
+
+    上端・下端の帯に完全に収まっていて、かつページ番号（数字のみ）か柱であるものだけを除く。
+    帯から始まって下へ続く縦書きの列や、一度しか現れない見出しは残す。
 
     Args:
         boxes: (x0, y0, x1, y1, text)。PDF座標系なので y は下が0
         page_height: ページの高さ
+        running_heads: find_running_heads で検出した柱
     """
-    header_boundary = page_height * (1 - header_ratio)
-    footer_boundary = page_height * footer_ratio
-    return [
-        text for _x0, y0, _x1, y1, text in boxes
-        if y1 <= header_boundary and y0 >= footer_boundary
-    ]
+    body = []
+    for _x0, y0, _x1, y1, text in boxes:
+        if _in_margin_band(y0, y1, page_height, header_ratio, footer_ratio):
+            key = _band_key(text)
+            if not key or key in running_heads:
+                continue
+        body.append(text)
+    return body
 
 
 def extract_text_pages(
@@ -98,7 +137,7 @@ def extract_text_pages(
     header_ratio: float = DEFAULT_HEADER_RATIO,
     footer_ratio: float = DEFAULT_FOOTER_RATIO,
 ) -> List[str]:
-    """縦書きを考慮してPDFのテキスト層をページごとに抽出する"""
+    """縦書きを考慮してPDFのテキスト層をページごとに抽出し、柱とページ番号を除く"""
     from pdfminer.high_level import extract_pages
     from pdfminer.layout import LAParams, LTTextBox
 
@@ -110,6 +149,10 @@ def extract_text_pages(
             for element in page_layout
             if isinstance(element, LTTextBox)
         ]
-        body = select_body_boxes(boxes, page_layout.height, header_ratio, footer_ratio)
-        pages.append('\n'.join(body))
-    return pages
+        pages.append((page_layout.height, boxes))
+
+    running_heads = find_running_heads(pages, header_ratio, footer_ratio)
+    return [
+        '\n'.join(select_body_boxes(boxes, height, header_ratio, footer_ratio, running_heads))
+        for height, boxes in pages
+    ]

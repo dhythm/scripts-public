@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dpi", type=int, default=DEFAULT_DPI, help=f"OCR時の画像化の解像度 (default: {DEFAULT_DPI})")
     parser.add_argument(
         "--keep-margins", action="store_true",
-        help="テキスト層の抽出で、ページ上下の柱・ページ番号の領域を除外しない",
+        help="テキスト層の抽出で、ページ上下の帯にある柱（繰り返し現れる見出し）とページ番号を除外しない",
     )
     parser.add_argument("--force", action="store_true", help="既存の出力ファイルを上書きする")
     return parser

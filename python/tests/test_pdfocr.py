@@ -14,7 +14,7 @@ from pdfocr.postprocess import (
     format_text_to_markdown,
     normalize_special_chars,
 )
-from pdfocr.textlayer import needs_ocr, select_body_boxes
+from pdfocr.textlayer import find_running_heads, needs_ocr, select_body_boxes
 
 
 class TestDedupeConsecutivePages:
@@ -68,20 +68,50 @@ class TestFormatTextToMarkdown:
 
 
 class TestSelectBodyBoxes:
-    """ヘッダー/フッター領域のテキストボックスを除外する"""
+    """柱（ランニングヘッド）とページ番号だけを除外する"""
 
-    def test_drops_boxes_in_header_and_footer(self):
-        # (x0, y0, x1, y1, text)。PDF座標系は下が0
+    # (x0, y0, x1, y1, text)。PDF座標系は下が0、ページの高さは1000
+
+    def test_drops_running_head_and_page_number(self):
         boxes = [
-            (0, 950, 100, 990, "ヘッダー"),
+            (0, 950, 100, 990, "吾輩は猫である"),
             (0, 200, 100, 800, "本文"),
             (0, 10, 100, 40, "12"),
         ]
-        assert select_body_boxes(boxes, page_height=1000) == ["本文"]
+        assert select_body_boxes(boxes, 1000, running_heads={"吾輩は猫である"}) == ["本文"]
+
+    def test_keeps_column_that_starts_in_header_band(self):
+        """上端の帯から始まって下へ続く縦書きの列は本文として残す"""
+        boxes = [(900, 300, 940, 960, "縦書きの本文の列")]
+        assert select_body_boxes(boxes, 1000) == ["縦書きの本文の列"]
+
+    def test_keeps_one_off_heading_in_header_band(self):
+        """繰り返し現れない見出しは、上端の帯にあっても残す"""
+        boxes = [(0, 950, 100, 990, "第一章　はじまり"), (0, 200, 100, 800, "本文")]
+        assert select_body_boxes(boxes, 1000) == ["第一章　はじまり", "本文"]
 
     def test_custom_ratios(self):
-        boxes = [(0, 950, 100, 990, "上端の本文")]
-        assert select_body_boxes(boxes, page_height=1000, header_ratio=0.0) == ["上端の本文"]
+        boxes = [(0, 10, 100, 40, "12")]
+        assert select_body_boxes(boxes, 1000, footer_ratio=0.0) == ["12"]
+
+
+class TestFindRunningHeads:
+    """複数ページの同じ帯に繰り返し現れるテキストを柱として検出する"""
+
+    def test_repeated_band_text_is_running_head(self):
+        pages = [
+            (1000, [(0, 950, 100, 990, "吾輩は猫である 12"), (0, 200, 100, 800, "本文A")]),
+            (1000, [(0, 950, 100, 990, "吾輩は猫である 13"), (0, 200, 100, 800, "本文B")]),
+        ]
+        # ページ番号の数字が違っても同じ柱とみなす
+        assert find_running_heads(pages) == {"吾輩は猫である"}
+
+    def test_text_on_single_page_is_not_running_head(self):
+        pages = [
+            (1000, [(0, 950, 100, 990, "第一章　はじまり")]),
+            (1000, [(0, 200, 100, 800, "本文")]),
+        ]
+        assert find_running_heads(pages) == set()
 
 
 class TestNeedsOcr:
