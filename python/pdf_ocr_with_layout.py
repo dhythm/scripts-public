@@ -1,8 +1,7 @@
 import argparse
-import time
-import json
+import uuid
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 
 from google.api_core.client_options import ClientOptions
 from google.api_core.exceptions import GoogleAPICallError, NotFound
@@ -45,16 +44,17 @@ def create_or_get_bucket(storage_client: storage.Client, bucket_name: str, locat
             raise Exception(f"GCSバケットの作成に失敗しました: {e}. リージョン '{location}' がGCSで有効か確認してください。")
     return bucket
 
-def cleanup_gcs_folder(bucket: storage.Bucket, prefix: str):
-    """GCSフォルダ内のファイルをすべて削除する"""
-    blobs = list(bucket.list_blobs(prefix=prefix))
-    if not blobs:
-        return
-        
-    print(f"GCSフォルダ '{prefix}' 内のファイルをクリーンアップ中...")
+def cleanup_run_blobs(blobs):
+    """Delete only the exact object generations observed during this run."""
     for blob in blobs:
-        blob.delete()
-    print(f"'{prefix}' 内の {len(blobs)} 個のファイルを削除しました。")
+        try:
+            if blob.generation is None:
+                print(f"世代番号が不明なため保持します: gs://{blob.bucket.name}/{blob.name}")
+                continue
+            blob.delete(if_generation_match=blob.generation)
+        except Exception as error:
+            # Cleanup must not hide a processing error or discard extracted text.
+            print(f"一時ファイルを削除できませんでした ({blob.name}): {error}")
 
 
 def batch_process_document_with_bounds(
@@ -71,6 +71,10 @@ def batch_process_document_with_bounds(
     """
     PDFドキュメントを非同期で処理し、指定された境界内のテキストを抽出する。
     """
+    path = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
+
     storage_client = storage.Client()
     docai_client_options = ClientOptions(api_endpoint=f"{location}-documentai.googleapis.com")
     docai_client = documentai.DocumentProcessorServiceClient(client_options=docai_client_options)
@@ -79,24 +83,21 @@ def batch_process_document_with_bounds(
     bucket_name = f"{project_id}-docai-batch-processing"
     bucket = create_or_get_bucket(storage_client, bucket_name, gcs_location)
 
-    gcs_input_prefix = "input/"
-    gcs_output_prefix = "output/"
+    run_prefix = f"runs/{uuid.uuid4().hex}/"
+    gcs_input_prefix = f"{run_prefix}input/"
+    gcs_output_prefix = f"{run_prefix}output/"
+    owned_blobs = []
+    processing_succeeded = False
     
     extracted_text = []
 
     try:
         # ---- GCSの準備とアップロード ----
-        cleanup_gcs_folder(bucket, gcs_input_prefix)
-        cleanup_gcs_folder(bucket, gcs_output_prefix)
-
-        path = Path(file_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
-        
         gcs_input_uri = f"gs://{bucket_name}/{gcs_input_prefix}{path.name}"
         blob = bucket.blob(f"{gcs_input_prefix}{path.name}")
         print(f"ファイルをGCSにアップロード中: {gcs_input_uri}")
-        blob.upload_from_filename(file_path)
+        blob.upload_from_filename(file_path, if_generation_match=0)
+        owned_blobs.append(blob)
 
         # ---- 非同期処理の実行 ----
         gcs_document = documentai.GcsDocument(gcs_uri=gcs_input_uri, mime_type=mime_type)
@@ -141,7 +142,8 @@ def batch_process_document_with_bounds(
         if not output_blobs:
             raise Exception("処理結果が見つかりませんでした。")
 
-        json_blobs = [b for b in output_blobs if ".json" in b.name]
+        owned_blobs.extend(output_blobs)
+        json_blobs = [b for b in output_blobs if b.name.endswith(".json")]
         if not json_blobs:
             raise Exception("JSON形式の処理結果が見つかりませんでした。")
         
@@ -178,12 +180,14 @@ def batch_process_document_with_bounds(
                 extracted_text.append(page_text.strip())
                 extracted_text.append("\n")
     
+        processing_succeeded = True
     finally:
-        # ---- クリーンアップ ----
-        print("クリーンアップ処理を開始します...")
-        cleanup_gcs_folder(bucket, gcs_input_prefix)
-        cleanup_gcs_folder(bucket, gcs_output_prefix)
-        print("クリーンアップが完了しました。")
+        if processing_succeeded:
+            cleanup_run_blobs(owned_blobs)
+        else:
+            # Preserve input and partial output for diagnosis or recovery. A failed
+            # or timed-out operation may still be writing to its own prefix.
+            print(f"処理に失敗したため一時ファイルを保持します: gs://{bucket_name}/{run_prefix}")
 
     return "\n".join(extracted_text)
 
@@ -200,6 +204,8 @@ def main():
 このスクリプトは、大きなPDFファイルを処理するために非同期APIを使用します。
 処理中、ファイルは一時的にGoogle Cloud Storageバケットにアップロードされます。
 バケットは `{PROJECT_ID}-docai-batch-processing` という名前で自動的に作成されます。
+実行ごとに固有の runs/<ID>/ を使用し、成功時は当該実行で確認した世代だけ削除します。
+失敗時は診断・復旧用に入力と部分出力を保持し、保存先を表示します。
 """
     )
     parser.add_argument("project_id", help="Google Cloud プロジェクトID")
