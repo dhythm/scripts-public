@@ -237,7 +237,7 @@ GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
 - `--reencode`: flac
 - `--sample-rate`: 16000
 - `--timestamps`: true
-- `--merged-output`: 未指定（ファイル保存しない）
+- `--merged-output`: ローカル入力時は元ファイル名の拡張子を `.txt` に変更したパス。既存ファイルへの上書きは拒否
 
 主なオプション:
 
@@ -259,3 +259,10 @@ GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
 | `--help, -h` | ヘルプを表示 |
 
 実行後、各単語に付与された `speakerTag` と時間情報を標準出力に表示します。StreamingRecognize では話者識別が効かないため、本ツールは BatchRecognize 専用です。
+
+### BatchRecognize のデータ保護
+
+- GCS の入力音声と認識結果は自動削除しません。処理失敗時も保持されるため、保存結果を確認してから不要なオブジェクトを手動で削除してください。保存期間に応じてストレージ料金が発生します。
+- `--object` が既存オブジェクトと衝突するアップロードは拒否します。
+- `--output-gcs` には専用プレフィックスを指定してください（例: `gs://bucket/stt-results/`）。バケット直下は拒否します。結果の取得では API が返したオブジェクトだけを読みます。
+- `--merged-output` は入力と異なる未使用のパスにしてください。全チャンクの結果を確認した後で保存し、既存ファイルへの上書きも拒否します。

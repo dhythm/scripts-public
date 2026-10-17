@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { tmpdir } from "node:os";
-import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync, readFileSync, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { mkdtemp, readdir } from "node:fs/promises";
@@ -199,9 +199,11 @@ function formatElapsed(ms: number): string {
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const mainStartTime = performance.now();
   const options = parseCliOptions();
+  assertSafeMergedOutput(options.filePath, options.mergedOutput);
+  if (options.outputGcsUri) validateOutputGcsUri(options.outputGcsUri);
 
   if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     setupCredentialsFromBase64();
@@ -297,8 +299,6 @@ async function main(): Promise<void> {
   };
 
   // 入力ソースを決定（GCS URI かローカルアップロード）
-  // ローカルファイルをアップロードした場合は後で削除するため追跡
-  let uploadedGcsUris: string[] = [];
   const sourceUri = options.gcsUri
     ? options.gcsUri
     : await (async () => {
@@ -311,7 +311,6 @@ async function main(): Promise<void> {
           reencode: options.reencode,
           sampleRate: options.sampleRate,
         });
-        uploadedGcsUris = Array.isArray(uris) ? uris : [uris];
         return uris;
       })();
 
@@ -369,30 +368,13 @@ async function main(): Promise<void> {
       console.log(`進捗        : ${opMeta.progressPercent}%`);
     }
 
-    const transcriptResults =
-      response.results?.[uri]?.transcript?.results ?? [];
-
-    if (transcriptResults.length === 0) {
-      // ファイル個別のエラー
-      const fileError =
-        response.results?.[uri]?.error as
-          | protos.google.rpc.IStatus
-          | undefined;
-      if (fileError?.code || fileError?.message) {
-        console.error(
-          `ファイルエラー: ${fileError.code ?? ""} ${fileError.message ?? ""}`
-        );
-      }
-
-      if (outputPrefix) {
-        console.warn(
-          "結果が inline に含まれていません。GCS 出力先を確認します。"
-        );
-        await listOutputPrefix(outputPrefix);
-      } else {
-        console.warn("結果がありません。音声や設定を確認してください。");
-      }
-      continue;
+    const fileResult = response.results?.[uri];
+    if (fileResult?.error?.code || fileResult?.error?.message) {
+      throw new Error(`チャンク ${idx + 1} の認識に失敗しました: ${fileResult.error.message ?? fileResult.error.code}`);
+    }
+    const transcriptResults = await readTranscriptResults(fileResult);
+    if (!transcriptResults.some((result) => hasTranscript(result.alternatives?.[0]))) {
+      throw new Error(`チャンク ${idx + 1} に保存可能な文字起こし結果がありません。GCS データは保持します。`);
     }
 
     // チャンク区切りマーカーを挿入（2つ目以降のチャンク）
@@ -426,35 +408,30 @@ async function main(): Promise<void> {
     console.log(`\n⏱️  チャンク ${idx + 1} 処理時間: ${formatElapsed(chunkElapsed)}`);
   }
 
-  // inline に結果が無い場合、GCS 出力を再取得してマージを試みる
-  if (!mergedFound && outputPrefix) {
-    console.log("\ninline に結果が無かったため、GCS 出力から再取得してマージします...");
-    const success = await downloadAndMergeFromGcs(outputPrefix, appendMerged, mergedLines);
-    if (!success) {
-      console.warn("GCS 出力を取得できませんでした。権限やプレフィックスを確認してください。");
-    }
-  }
-
   if (mergedLines.length > 0) {
     const mergedText = mergedLines.join("\n");
     console.log("\n=== マージ済みテキスト (stt:batch) ===");
     console.log(mergedText);
     if (options.mergedOutput) {
-      writeFileSync(options.mergedOutput, mergedText, "utf8");
+      writeFileSync(options.mergedOutput, mergedText, { encoding: "utf8", flag: "wx" });
       console.log(`書き出し: ${options.mergedOutput}`);
     }
   } else if (options.mergedOutput) {
     console.warn("マージ可能な結果がありませんでした。");
   }
 
-  // アップロードしたオブジェクトと出力先オブジェクトを削除
-  await cleanupGcsObjects(uploadedGcsUris, outputPrefix);
+  if (!mergedFound) {
+    throw new Error("保存可能な文字起こし結果がありません。GCS データは保持します。");
+  }
+  if (outputPrefix) {
+    console.log(`GCS 入力・出力を保持しました。不要になったデータは手動で削除してください: gs://${outputPrefix.bucket}/${outputPrefix.prefix}`);
+  }
 
   const totalElapsed = performance.now() - mainStartTime;
   console.log(`\n✅ 総処理時間: ${formatElapsed(totalElapsed)}`);
 }
 
-main().catch((error) => {
+if (require.main === module) main().catch((error) => {
   console.error(
     `❌ エラーが発生しました: ${
       error instanceof Error ? error.message : String(error)
@@ -521,6 +498,7 @@ async function uploadIfNeeded(params: {
     await storage.bucket(params.bucket).upload(params.filePath, {
       destination: objectName,
       resumable: true,
+      preconditionOpts: { ifGenerationMatch: 0 },
     });
   } catch (error) {
     console.error(
@@ -528,7 +506,7 @@ async function uploadIfNeeded(params: {
         error instanceof Error ? error.message : String(error)
       }`
     );
-    process.exit(1);
+    throw error;
   }
 
   return `gs://${params.bucket}/${objectName}`;
@@ -680,146 +658,51 @@ function ensureTrailingSlash(uri: string): string {
   return uri.endsWith("/") ? uri : `${uri}/`;
 }
 
-/**
- * 指定プレフィックスの出力を列挙してログに表示
- */
-async function listOutputPrefix(prefix: { bucket: string; prefix: string }) {
-  const storage = new Storage();
-  const [files] = await storage.bucket(prefix.bucket).getFiles({
-    prefix: prefix.prefix,
-  });
-
-  if (files.length === 0) {
-    console.warn(
-      `GCS 出力が見つかりませんでした: gs://${prefix.bucket}/${prefix.prefix}`
-    );
-    return;
+/** Refuse existing destinations before any upload/API work; wx also closes the write race. */
+export function assertSafeMergedOutput(inputPath?: string, outputPath?: string): void {
+  if (!outputPath) return;
+  if (inputPath && path.resolve(inputPath) === path.resolve(outputPath)) {
+    throw new Error("入力ファイルと --merged-output に同じパスは指定できません。");
   }
-
-  console.log("GCS 出力ファイル:");
-  files.forEach((f) =>
-    console.log(`- gs://${prefix.bucket}/${f.name} (${f.metadata.size} bytes)`)
-  );
+  try {
+    lstatSync(outputPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`出力先は既に存在します。別の --merged-output を指定してください: ${outputPath}`);
 }
 
-/**
- * GCS 出力に書き出された transcript JSON をダウンロードし、
- * alternatives[0].words を appendMerged 経由でマージする。
- * 1件でも処理できれば true を返す。
- */
-async function downloadAndMergeFromGcs(
-  prefix: { bucket: string; prefix: string },
-  appendMerged: (alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null) => void,
-  mergedLines: string[]
-): Promise<boolean> {
-  const storage = new Storage();
-  const [files] = await storage.bucket(prefix.bucket).getFiles({
-    prefix: prefix.prefix,
-  });
-
-  const targets = files
-    .filter((f) => f.name.endsWith(".json"))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  if (targets.length === 0) {
-    console.warn(
-      `GCS 出力が見つかりませんでした: gs://${prefix.bucket}/${prefix.prefix}`
-    );
-    return false;
+export function validateOutputGcsUri(uri: string): void {
+  const { prefix } = parseGcsUri(uri);
+  if (!prefix.replace(/\//g, "").trim()) {
+    throw new Error("--output-gcs はバケット直下ではなく専用のプレフィックスを指定してください。");
   }
-
-  console.log(`GCS から ${targets.length} 件の transcript JSON を取得してマージします...`);
-
-  for (const [idx, f] of targets.entries()) {
-    // チャンク区切りマーカーを挿入（2つ目以降のチャンク）
-    if (idx > 0 && mergedLines.length > 0) {
-      mergedLines.push("");
-      mergedLines.push(`--- チャンク ${idx + 1} 開始 ---`);
-      mergedLines.push("");
-    }
-
-    try {
-      const [buf] = await f.download();
-      const json = JSON.parse(buf.toString()) as {
-        transcript?: { results?: protos.google.cloud.speech.v2.ISpeechRecognitionResult[] };
-        results?: protos.google.cloud.speech.v2.ISpeechRecognitionResult[] | any;
-      };
-      const results =
-        json.transcript?.results ??
-        (Array.isArray(json.results) ? json.results : []);
-
-      for (const result of results) {
-        appendMerged(result.alternatives?.[0]);
-      }
-    } catch (error) {
-      console.warn(
-        `GCS ファイルの処理に失敗しました (${f.name}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-  }
-
-  return true;
 }
 
-/**
- * アップロードした入力ファイルと出力先のオブジェクトを削除する
- */
-async function cleanupGcsObjects(
-  uploadedUris: string[],
-  outputPrefix?: { bucket: string; prefix: string }
-): Promise<void> {
-  const storage = new Storage();
-  let deletedCount = 0;
+function hasTranscript(alt?: protos.google.cloud.speech.v2.ISpeechRecognitionAlternative | null): boolean {
+  return Boolean(alt?.transcript?.trim() || alt?.words?.some((word) => word.word?.trim()));
+}
 
-  // アップロードした入力ファイルを削除
-  for (const uri of uploadedUris) {
-    try {
-      const { bucket, prefix: objectName } = parseGcsUri(uri);
-      await storage.bucket(bucket).file(objectName).delete();
-      deletedCount++;
-      console.log(`🗑️  削除: ${uri}`);
-    } catch (error) {
-      console.warn(
-        `入力ファイルの削除に失敗しました (${uri}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+/** Read only the object identified by this file's API result, never an entire user prefix. */
+export async function readTranscriptResults(
+  fileResult?: protos.google.cloud.speech.v2.IBatchRecognizeFileResult,
+): Promise<protos.google.cloud.speech.v2.ISpeechRecognitionResult[]> {
+  const inline = fileResult?.inlineResult?.transcript?.results ?? fileResult?.transcript?.results;
+  if (inline?.length) return inline;
+  const resultUri = fileResult?.cloudStorageResult?.uri || fileResult?.uri;
+  if (!resultUri) throw new Error("認識結果の JSON URI がありません。GCS データは保持します。");
+  const { bucket, prefix: objectName } = parseGcsUri(resultUri);
+  if (!objectName || objectName.endsWith("/")) throw new Error("認識結果の URI は JSON オブジェクトを指定する必要があります。");
+  const [buffer] = await new Storage().bucket(bucket).file(objectName).download();
+  const json: unknown = JSON.parse(buffer.toString("utf8"));
+  if (!json || typeof json !== "object") throw new Error("認識結果 JSON の形式が不正です。");
+  const record = json as { transcript?: { results?: unknown }; results?: unknown };
+  const results = record.transcript?.results ?? record.results;
+  if (!Array.isArray(results) || !results.some((result) => hasTranscript(result?.alternatives?.[0]))) {
+    throw new Error("GCS の JSON に保存可能な文字起こし結果がありません。データは保持します。");
   }
-
-  // 出力先のオブジェクトを削除
-  if (outputPrefix) {
-    try {
-      const [files] = await storage.bucket(outputPrefix.bucket).getFiles({
-        prefix: outputPrefix.prefix,
-      });
-      for (const file of files) {
-        try {
-          await file.delete();
-          deletedCount++;
-          console.log(`🗑️  削除: gs://${outputPrefix.bucket}/${file.name}`);
-        } catch (error) {
-          console.warn(
-            `出力ファイルの削除に失敗しました (${file.name}): ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
-      }
-    } catch (error) {
-      console.warn(
-        `出力先の一覧取得に失敗しました: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-  }
-
-  if (deletedCount > 0) {
-    console.log(`🧹 ${deletedCount} 件のオブジェクトを削除しました`);
-  }
+  return results;
 }
 
 /**
