@@ -2,13 +2,16 @@
 
 `node-ts` ディレクトリには Node.js + TypeScript で動作するユーティリティを配置しています。
 
+開発用のVite/Vitestも含め、`package-lock.json` のengine要件に合うNode.jsを使用してください。
+`npm ci` はlockに従ってインストールします。`dev` / `start` の既定entryは実用CLIではなく `src/index.ts` のサンプルです。各ユーティリティは下記の専用コマンドを選びます。
+
 ## 一次情報ハーベスタ (`primary-source-harvester.ts`)
 
 OpenAI Responses API の `web_search` ツールと自前の `pdf_search` 関数を組み合わせて、指定キーワードに関する一次情報・二次情報を一定数集めるツールです。PDF のみをピンポイントで探す場合は Bing の `filetype:pdf` 検索を行い、公式ドメインを優先します。
 
 ### 前提
 
-- Node.js 18 以上
+- Node.js 22.12 以上（または Node.js 24）。Node.js 20 を使う場合は 20.19 以上
 - 依存関係インストール: `npm install`
 - 環境変数 `OPENAI_API_KEY` を設定
 
@@ -76,7 +79,7 @@ npm run primary-harvest -- \
 
 ### 前提
 
-- Node.js 18 以上
+- Node.js 22.12 以上（または Node.js 24）。Node.js 20 を使う場合は 20.19 以上
 - `npm install` 済み
 - 環境変数 `OPENAI_API_KEY`
 
@@ -115,7 +118,7 @@ OpenAI Text-to-Speech API を使用して日本語テキストを音声ファイ
 
 ### 前提
 
-- Node.js 18 以上
+- Node.js 22.12 以上（または Node.js 24）。Node.js 20 を使う場合は 20.19 以上
 - 依存関係インストール: `npm install`
 - 環境変数 `OPENAI_API_KEY` を設定
 
@@ -190,7 +193,7 @@ Google Cloud Speech-to-Text v2 の `chirp_3` モデルで長尺音声を文字�
 
 ### 前提
 
-- Node.js 18 以上
+- Node.js 22.12 以上（または Node.js 24）。Node.js 20 を使う場合は 20.19 以上
 - `npm install` 済み
 - 環境変数 `GOOGLE_CLOUD_PROJECT` と認証情報（例: `GOOGLE_APPLICATION_CREDENTIALS`）を設定
   - もしくは `GOOGLE_APPLICATION_CREDENTIALS_BASE64` にサービスアカウント JSON を Base64 で渡すと、一時ファイルに展開して利用します

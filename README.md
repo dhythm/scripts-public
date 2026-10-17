@@ -4,7 +4,21 @@
 
 ## セットアップ
 
-### 依存関係のインストール
+### 作業ディレクトリと依存関係
+
+このリポジトリには独立した実行環境があります。ルートの `uv sync` は `python/` 以下の全ツールを準備するコマンドではありません。
+
+| 場所 | 用途 | 準備 |
+|---|---|---|
+| ルート | 主にPDFのローカル抽出・SVG用の小さいPython環境 | `uv sync` |
+| `python/` | OCR・サイト調査・画像・音声などのPython CLI | `cd python` → `uv sync` |
+| `javascript/node-ts/` | 情報源調査、TTS、Chirp等のNode CLI | 同ディレクトリで `npm ci` |
+| `javascript/deno-ts/` | PDF抽出、会議候補、PRTIMES等のDeno CLI | 同ディレクトリのREADME・`deno.json`参照 |
+
+各Python環境は別の `pyproject.toml` と `uv.lock` を使います。`site-inspector` のentry pointは `python/` 側にのみあります。
+音声検証で使用中の環境や共有依存を置き換える必要はありません。既存の仮想環境に対する一括更新は避け、対象ツールの手順を選んでください。
+
+### ルートの依存関係のインストール
 
 [uv](https://docs.astral.sh/uv/)を使用して依存関係をインストールします：
 
@@ -22,10 +36,10 @@ uv sync
 
 ```bash
 # uvを使用（推奨）
-uv run python python/pdf_to_markdown.py <PDFファイルパス> [出力ファイルパス]
+uv run python python/pdf_to_markdown.py <PDFファイルパス> [-o 出力ファイルパス]
 
 # または直接実行
-python3 python/pdf_to_markdown.py <PDFファイルパス> [出力ファイルパス]
+python3 python/pdf_to_markdown.py <PDFファイルパス> [-o 出力ファイルパス]
 ```
 
 #### 使用例
@@ -35,7 +49,7 @@ python3 python/pdf_to_markdown.py <PDFファイルパス> [出力ファイルパ
 uv run python python/pdf_to_markdown.py document.pdf
 
 # 出力ファイル名を指定
-uv run python python/pdf_to_markdown.py document.pdf output.md
+uv run python python/pdf_to_markdown.py document.pdf -o output.md
 ```
 
 #### 特徴
@@ -56,20 +70,22 @@ uv run python python/pdf_to_markdown.py document.pdf output.md
 
 #### OCRによるテキスト抽出
 
-画像ベースのPDFからテキストを抽出する場合：
+画像ベースのPDFからテキストを抽出する場合は、OCR依存を持つ `python/` 側で準備・実行します：
 
 ```bash
-python3 python/pdf_ocr.py <PDFファイルパス>
+cd python
+uv sync
+uv run python pdf_ocr.py <PDFファイルパス>
 ```
 
-**注意**: OCR機能にはTesseractのインストールが必要です：
+**注意**: OCRにはTesseractと言語データに加え、`pdf2image`が呼ぶPopplerが必要です：
 
 ```bash
 # macOS
-brew install tesseract tesseract-lang
+brew install tesseract tesseract-lang poppler
 
 # Ubuntu/Debian
-sudo apt-get install tesseract-ocr tesseract-ocr-jpn
+sudo apt-get install tesseract-ocr tesseract-ocr-jpn poppler-utils
 ```
 
 #### シンプルなテキスト抽出
