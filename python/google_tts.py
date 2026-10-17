@@ -172,12 +172,16 @@ def _load_text(text: Optional[str], text_file: Optional[Path]) -> str:
     if text and text_file:
         raise typer.BadParameter("--text と --text-file は同時に指定できません。")
     if text:
-        return text
-    if text_file:
+        content = text
+    elif text_file:
         if not text_file.exists():
             raise typer.BadParameter(f"テキストファイルが見つかりません: {text_file}")
-        return text_file.read_text(encoding="utf-8").strip()
-    raise typer.BadParameter("--text か --text-file のいずれかを指定してください。")
+        content = text_file.read_text(encoding="utf-8").strip()
+    else:
+        raise typer.BadParameter("--text か --text-file のいずれかを指定してください。")
+    if not content.strip():
+        raise typer.BadParameter("読み上げるテキストが空です。")
+    return content
 
 
 def _ensure_credentials(credentials_path: Optional[Path]) -> None:

@@ -59,3 +59,20 @@ def test_cli_rejects_zero_before_credentials(monkeypatch):
     result = CliRunner().invoke(tts.app, ["--text", "hello", "--max-retries", "0"])
     assert result.exit_code == 2
     credentials.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["text", "file"])
+def test_cli_rejects_blank_text_before_api(monkeypatch, tmp_path, source):
+    monkeypatch.setattr(tts, "_ensure_credentials", Mock())
+    synthesize = Mock()
+    monkeypatch.setattr(tts, "synthesize_long_speech", synthesize)
+    if source == "file":
+        text_file = tmp_path / "blank.txt"
+        text_file.write_text(" \n\t\n", encoding="utf-8")
+        args = ["--text-file", str(text_file)]
+    else:
+        args = ["--text", "   "]
+    result = CliRunner().invoke(tts.app, args)
+    assert result.exit_code == 2
+    assert "空" in result.output
+    synthesize.assert_not_called()
