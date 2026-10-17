@@ -73,6 +73,7 @@ class Crawler:
         self._visited: Set[str] = set()
         self._results: List[PageData] = []
         self._pages_crawled = 0
+        self._pages_started = 0
         self._parser = HTMLParser(str(config.base_url))
         self._client: Optional[httpx.AsyncClient] = None
         self._robots = RobotsHandler(config)
@@ -126,9 +127,12 @@ class Crawler:
             for _ in range(self.config.concurrency)
         ]
 
-        await queue.join()
-        for worker in workers:
-            worker.cancel()
+        try:
+            await queue.join()
+        finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
     async def _initial_urls(self) -> Set[str]:
         seeds: Set[str] = {normalize_url(str(self.config.base_url))}
@@ -146,11 +150,27 @@ class Crawler:
         while True:
             url, depth = await queue.get()
             try:
-                if self._pages_crawled >= self.config.max_pages:
+                if self._pages_started >= self.config.max_pages:
                     continue
                 if not self._should_visit(url, depth):
                     continue
-                await self._process_url(url, depth, queue, progress, task_id)
+                # Reserve a slot before yielding, so in-flight requests count too.
+                self._pages_started += 1
+                try:
+                    await self._process_url(url, depth, queue, progress, task_id)
+                except Exception as exc:
+                    self._results.append(
+                        PageData(
+                            url=normalize_url(url),
+                            depth=depth,
+                            parent_url=self._parent_map.get(normalize_url(url)),
+                            fetched_at=datetime.utcnow(),
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                finally:
+                    self._pages_crawled += 1
+                    progress.update(task_id, completed=self._pages_crawled)
             finally:
                 queue.task_done()
 
@@ -205,6 +225,7 @@ class Crawler:
             page = PageData(
                 url=normalized,
                 depth=depth,
+                parent_url=self._parent_map.get(normalized),
                 status_code=None,
                 content_type=None,
                 fetched_at=fetched_at,
@@ -244,18 +265,16 @@ class Crawler:
         if self.config.output.download_images and self._image_downloader:
             await self._download_images(page)
 
-        self._results.append(page)
-        self._pages_crawled += 1
-        progress.update(task_id, completed=self._pages_crawled)
-
         await asyncio.sleep(self.config.delay_seconds)
 
-        if depth < self.config.max_depth and self._pages_crawled < self.config.max_pages:
+        if depth < self.config.max_depth and self._pages_started < self.config.max_pages:
             for link in links:
                 if self._should_visit(link, depth + 1):
                     child_normalized = normalize_url(link)
                     self._parent_map.setdefault(child_normalized, normalized)
                     await queue.put((link, depth + 1))
+
+        self._results.append(page)
 
     async def _download_images(self, page: PageData) -> None:
         assert self._image_downloader is not None

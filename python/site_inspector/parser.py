@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
+from pydantic import HttpUrl, TypeAdapter, ValidationError
 
 from .models import ImageData, PageData, PageMetadata
+
+HTTP_URL = TypeAdapter(HttpUrl)
 
 
 def sanitize_text(text: str, *, max_length: int = 600) -> str:
@@ -57,8 +60,9 @@ class HTMLParser:
             if key and content:
                 meta_entries.append(PageMetadata(name=key, value=content))
 
-        text_content = sanitize_text(soup.get_text(separator=" ", strip=True), max_length=1200)
+        text_content = soup.get_text(separator=" ", strip=True)
         word_count = len(text_content.split())
+        text_preview = sanitize_text(text_content, max_length=1200)
 
         image_entries = self._extract_images(soup, url)
         links = self._extract_links(soup, url)
@@ -74,7 +78,7 @@ class HTMLParser:
             canonical_url=canonical,
             headings=headings,
             meta=meta_entries,
-            text_preview=text_content,
+            text_preview=text_preview,
             word_count=word_count,
             links=links,
             images=image_entries,
@@ -88,6 +92,11 @@ class HTMLParser:
             if not src:
                 continue
             absolute = urljoin(page_url, src)
+            try:
+                absolute_url = HTTP_URL.validate_python(absolute)
+            except ValidationError:
+                # Preserve embedded/non-HTTP images as metadata, without downloading.
+                absolute_url = None
             alt_text = node.get("alt")
             width = self._parse_int(node.get("width"))
             height = self._parse_int(node.get("height"))
@@ -95,7 +104,7 @@ class HTMLParser:
             images.append(
                 ImageData(
                     src=src,
-                    absolute_url=absolute,
+                    absolute_url=absolute_url,
                     alt_text=alt_text,
                     width=width,
                     height=height,
