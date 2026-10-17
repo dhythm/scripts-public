@@ -1,6 +1,8 @@
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+import os
+import stat
 import sys
 
 import pytest
@@ -92,3 +94,28 @@ def test_failed_atomic_replace_preserves_previous_output(tmp_path, monkeypatch):
         pdf_output.save_text(source, target, "new", overwrite=True)
     assert target.read_text() == "previous"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["input.pdf", "output.txt"]
+
+
+def test_new_output_follows_umask(tmp_path):
+    from pdf_output import save_text
+    source = tmp_path / "in.pdf"
+    source.write_bytes(b"%PDF")
+    target = tmp_path / "out.txt"
+    previous = os.umask(0o022)
+    try:
+        save_text(source, target, "text")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_forced_output_keeps_existing_mode(tmp_path):
+    from pdf_output import save_text
+    source = tmp_path / "in.pdf"
+    source.write_bytes(b"%PDF")
+    target = tmp_path / "out.txt"
+    target.write_text("old", encoding="utf-8")
+    target.chmod(0o640)
+    save_text(source, target, "new", overwrite=True)
+    assert target.read_text(encoding="utf-8") == "new"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
