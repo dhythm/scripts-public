@@ -40,6 +40,7 @@ dependencies = [
     "vtracer>=0.6.11",
     "easyocr>=1.7.0",
     "natsort>=8.4.0",
+    "mlx-qwen3-asr>=0.4.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]
 
 [project.scripts]

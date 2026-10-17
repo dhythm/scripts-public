@@ -164,18 +164,28 @@ uv run python transcribe_whisper.py input.mp4 --output subtitles.srt --format sr
 - タイムスタンプ付き出力オプション
 - 音声ファイルの自動変換（mp3, wav, m4a, flac等に対応）
 
-### 2. Faster-Whisper版 (transcribe_faster_whisper.py)
+### 2. Qwen3-ASR / Faster-Whisper版 (transcribe_faster_whisper.py)
 
-CTranslate2ベースの高速実装を使用した音声文字起こしツールです。
+2つのエンジンを切り替えて使える音声文字起こしツールです（ファイル名は後方互換のため据え置き）。
+
+| エンジン | 指定 | 特徴 |
+|---------|------|------|
+| Qwen3-ASR（MLX） | デフォルト（`--engine qwen3`） | Apple SiliconのGPUで動作し高速（35分の音声を約1.5分）。句読点付き。**Apple Silicon Mac専用** |
+| faster-whisper | `--engine whisper` | CTranslate2ベース。MacではCPU実行のため遅い。単語タイムスタンプ・細かい字幕・翻訳が必要な場合に使用 |
+
+`--engine` を省略して `--model large-v3` などWhisperのモデル名を指定した場合は、従来どおりfaster-whisperを使用します。
 
 #### 基本的な使用方法
 
 ```sh
-# 基本的な使用方法
+# 基本的な使用方法（Qwen3-ASR）
 uv run python transcribe_faster_whisper.py input.mp3
 
-# モデルと言語を指定
-uv run python transcribe_faster_whisper.py input.mp3 --model large-v2 --language ja
+# 固有名詞・専門用語をヒントとして与える（両エンジン共通）
+uv run python transcribe_faster_whisper.py input.mp3 --hotwords "Kubernetes 岡田 議事録"
+
+# faster-whisper でモデルと言語を指定
+uv run python transcribe_faster_whisper.py input.mp3 --engine whisper --model large-v3 --language ja
 
 # GPUを使用して高速処理
 uv run python transcribe_faster_whisper.py input.wav --device cuda --compute_type float16
@@ -187,7 +197,15 @@ uv run python transcribe_faster_whisper.py input.mp4 --format json --word_timest
 uv run python transcribe_faster_whisper.py input.mp3 --format vtt --output subtitles.vtt
 ```
 
-VADが有効な場合、文字起こしを始める前に元の長さ・VAD後の見込み・削除秒数と削減率を表示します。削りすぎだと判断した場合は `Ctrl+C` で中断し、VADパラメータを調整して再実行できます。
+文字起こしの前に音声レベル（ピーク・発話レベル・背景ノイズ・SN比・クリップ率）を解析し、
+ノイズ除去の要否と強度を自動で決めます。SN比が10dB以上ならノイズ除去は行いません（ノイズ除去は音声も削り、認識精度を下げることがあるため）。
+元音声のクリップや発話レベルの小ささも警告します。
+
+Qwen3-ASRは約30秒単位で区切って出力するため、`--format srt/vtt` の字幕としては1行が長くなります。字幕用途には `--engine whisper` を推奨します。
+以下のオプションはfaster-whisper専用で、Qwen3-ASRでは無視されます（指定すると警告を表示）:
+`--beam_size`, `--temperature`, `--vad_*`, `--no_speech_threshold`, `--no_condition_on_previous_text`, `--word_timestamps`, `--device`, `--compute_type`, `--cpu_threads`, `--num_workers`
+
+faster-whisperでVADが有効な場合、文字起こしを始める前に元の長さ・VAD後の見込み・削除秒数と削減率を表示します。削りすぎだと判断した場合は `Ctrl+C` で中断し、VADパラメータを調整して再実行できます。
 
 #### ユースケース別の使用方法
 
@@ -204,7 +222,10 @@ uv run python transcribe_faster_whisper.py recording.m4a --vad_threshold 0.15
 ##### 2. ノイズが多い環境の場合
 
 ```sh
-# ノイズ除去 + ノーマライズ（推奨）
+# 通常は指定不要（SN比からノイズ除去の要否を自動判定）
+uv run python transcribe_faster_whisper.py noisy_audio.m4a
+
+# 強制的にノイズ除去を有効化
 uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_reduce_amount 0.5
 
 # ノイズ除去の強度を調整（0.0-1.0、デフォルト0.8）
@@ -251,8 +272,18 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 |-----------|------|-----------|--------|
 | `--normalize` / `--no_normalize` | 音声をピークノーマライズ（-3.0 dBFS） | 有効 | 無効化したい場合のみ `--no_normalize` |
 | `--gain` | ゲイン調整(dB)。正の値で音量アップ | 0 | 10-15 dB |
-| `--denoise` | ノイズ除去を適用 | なし | ノイズが多い場合に推奨 |
-| `--noise_reduce_amount` | ノイズ除去の強度（0.0-1.0） | 0.8 | 0.5-0.6（強すぎると音声劣化） |
+| `--denoise` / `--no_denoise` | ノイズ除去を強制的に有効化 / 無効化 | 自動判定（SN比10dB未満で強度0.5、5dB未満で0.8） | 通常は指定不要 |
+| `--noise_reduce_amount` | `--denoise` 指定時のノイズ除去の強度（0.0-1.0） | 0.8 | 0.5-0.6（強すぎると音声劣化） |
+
+##### 認識精度オプション
+
+| オプション | 説明 | 対応エンジン |
+|-----------|------|------------|
+| `--engine` | `qwen3`（デフォルト）または `whisper` | - |
+| `--model` | qwen3: Hugging FaceのモデルID（デフォルト `Qwen/Qwen3-ASR-1.7B`）、whisper: `large-v3` など（デフォルト `large-v3`） | 両方 |
+| `--hotwords` | 固有名詞・専門用語をスペース区切りで指定 | 両方 |
+| `--initial_prompt` | 文脈を与える初期プロンプト | 両方 |
+| `--no_condition_on_previous_text` | 直前の認識結果を文脈に使わない。同じ文の繰り返しが出る場合に有効 | whisper |
 
 ##### VAD（Voice Activity Detection）オプション
 
