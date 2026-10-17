@@ -1,4 +1,3 @@
-from pdf_output import save_text, validate_output
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -28,6 +27,8 @@ import argparse
 import hashlib
 from pathlib import Path
 from typing import Optional, List
+
+from pdf_output import save_text, validate_output
 
 # .envファイルから環境変数を読み込む
 try:
