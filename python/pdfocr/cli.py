@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 エンジン:
-  ndl       NDLOCR-Lite（デフォルト）。縦書きの和書に強く、GPUなしで高速。ルビは本文に含めない
+  ndl       NDLOCR-Lite（デフォルト）。縦書きの和書に強く、GPUなしで高速。ルビ・柱・ノンブルは認識対象外
   yomitoku  YomiToku。読み順の推定や表に強い。ルビは除去する。個人利用は無料（商用は有料）
 
 初回は使用するエンジンをセットアップしてください:
