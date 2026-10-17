@@ -2,9 +2,12 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type OpenAI from "openai";
 
-export type VoiceType = "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
-export type ModelType = "tts-1" | "tts-1-hd";
-export type AudioFormat = "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
+export const VOICE_TYPES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"] as const;
+export const MODEL_TYPES = ["tts-1", "tts-1-hd"] as const;
+export const AUDIO_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm"] as const;
+export type VoiceType = (typeof VOICE_TYPES)[number];
+export type ModelType = (typeof MODEL_TYPES)[number];
+export type AudioFormat = (typeof AUDIO_FORMATS)[number];
 
 export interface TextToSpeechOptions {
   voice?: VoiceType;

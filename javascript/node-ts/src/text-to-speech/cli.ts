@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import OpenAI from "openai";
 import {
   textToSpeech,
+  VOICE_TYPES,
+  MODEL_TYPES,
+  AUDIO_FORMATS,
   type VoiceType,
   type ModelType,
   type AudioFormat,
@@ -21,7 +24,7 @@ interface CliOptions {
 /**
  * CLIオプションをパースする
  */
-function parseCliOptions(): CliOptions {
+export function parseCliOptions(): CliOptions {
   const { values } = parseArgs({
     options: {
       text: { type: "string", short: "t" },
@@ -54,15 +57,13 @@ function parseCliOptions(): CliOptions {
     process.exit(1);
   }
 
-  const voice = (values.voice as VoiceType) || "nova";
-  const model = (values.model as ModelType) || "tts-1";
-  const format = (values.format as AudioFormat) || "mp3";
-  const speed = values.speed ? parseFloat(values.speed) : 1.0;
+  const voice = parseChoice(values.voice, "nova", VOICE_TYPES, "voice");
+  const model = parseChoice(values.model, "tts-1", MODEL_TYPES, "model");
+  const format = parseChoice(values.format, "mp3", AUDIO_FORMATS, "format");
+  const speed = values.speed === undefined ? 1.0 : Number(values.speed);
 
-  // 速度の検証 (0.25 - 4.0)
-  if (speed < 0.25 || speed > 4.0) {
-    console.error("エラー: --speed は 0.25 から 4.0 の範囲で指定してください");
-    process.exit(1);
+  if (!Number.isFinite(speed) || speed < 0.25 || speed > 4.0) {
+    throw new Error("--speed は 0.25 から 4.0 の有限な数値で指定してください");
   }
 
   return {
@@ -74,6 +75,16 @@ function parseCliOptions(): CliOptions {
     format,
     speed,
   };
+}
+
+function parseChoice<T extends string>(
+  value: string | undefined, fallback: T, choices: readonly T[], option: string,
+): T {
+  const choice = value ?? fallback;
+  if (!choices.includes(choice as T)) {
+    throw new Error(`--${option} は ${choices.join(", ")} のいずれかで指定してください`);
+  }
+  return choice as T;
 }
 
 /**
@@ -120,7 +131,7 @@ OpenAI Text-to-Speech CLI ツール
 /**
  * メイン処理
  */
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   try {
     const options = parseCliOptions();
 
@@ -185,7 +196,7 @@ async function main(): Promise<void> {
 }
 
 // エントリーポイント
-main().catch((error) => {
+if (require.main === module) main().catch((error) => {
   console.error(
     "致命的なエラーが発生しました:",
     error instanceof Error ? error.message : error
