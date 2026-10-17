@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-Faster-Whisperを使用した音声/動画文字起こしツール
+Qwen3-ASR / Faster-Whisperを使用した音声/動画文字起こしツール
+
+デフォルトはQwen3-ASR（MLX、Apple Silicon専用）。--engine whisper で faster-whisper を使用する。
 
 使用方法:
     python transcribe_faster_whisper.py <音声/動画ファイル> [オプション]
 
 例:
-    python transcribe_faster_whisper.py input.mp3 --model large-v2 --language ja
+    python transcribe_faster_whisper.py input.m4a --hotwords "固有名詞 専門用語"
+    python transcribe_faster_whisper.py input.mp3 --engine whisper --model large-v3 --language ja
     python transcribe_faster_whisper.py input.wav --device cuda --compute_type float16
     python transcribe_faster_whisper.py video.mp4 --model large-v2 --language ja
 """
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -37,6 +41,146 @@ except ImportError:
 VAD_THRESHOLD_CANDIDATES = [0.50, 0.30, 0.15, 0.05]
 # 最大検出量に対してこの割合以上を拾える閾値のうち、最も高いものを採用する
 VAD_AUTO_COVERAGE = 0.95
+# ピークノーマライズの目標値。0 dBFS に余裕を残してクリップを防ぐ
+NORMALIZE_TARGET_PEAK_DBFS = -3.0
+
+
+def compute_normalize_gain(
+    peak_dbfs: float,
+    target_peak_dbfs: float = NORMALIZE_TARGET_PEAK_DBFS
+) -> float:
+    """
+    ピークを目標値に揃えるためのゲイン(dB)を計算する
+
+    Args:
+        peak_dbfs: 現在のピーク音量(dBFS)。無音の場合は -inf
+        target_peak_dbfs: 目標ピーク音量(dBFS)
+
+    Returns:
+        適用すべきゲイン(dB)。無音の場合は 0
+    """
+    if not math.isfinite(peak_dbfs):
+        return 0.0
+    return target_peak_dbfs - peak_dbfs
+
+
+def _to_dbfs(value: float) -> float:
+    """振幅(0-1)をdBFSに変換する。0は -inf"""
+    return 20 * math.log10(value) if value > 0 else float('-inf')
+
+
+def analyze_audio_levels(
+    samples: np.ndarray,
+    sample_rate: int,
+    frame_ms: int = 50
+) -> Dict[str, float]:
+    """
+    音声のレベルを解析し、前処理パラメータ決定の材料を返す
+
+    フレームごとのRMSを計算し、下位10%を背景ノイズ、上位5%を発話レベルとみなす。
+
+    Args:
+        samples: -1.0〜1.0 に正規化されたモノラル音声
+        sample_rate: サンプリングレート
+        frame_ms: RMSを計算するフレーム長(ms)
+
+    Returns:
+        peak_dbfs, rms_dbfs, noise_floor_dbfs, speech_level_dbfs,
+        snr_db, clipping_ratio を持つ辞書
+    """
+    if len(samples) == 0:
+        raise ValueError("音声が空です")
+
+    samples = np.asarray(samples, dtype=np.float32)
+    abs_samples = np.abs(samples)
+
+    frame_len = max(1, int(sample_rate * frame_ms / 1000))
+    n_frames = max(1, len(samples) // frame_len)
+    frames = samples[:n_frames * frame_len].reshape(n_frames, -1)
+    frame_rms = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
+    voiced_rms = frame_rms[frame_rms > 0]
+
+    if len(voiced_rms) == 0:
+        noise_floor_dbfs = speech_level_dbfs = float('-inf')
+        snr_db = 0.0
+    else:
+        noise_floor_dbfs = _to_dbfs(float(np.percentile(voiced_rms, 10)))
+        speech_level_dbfs = _to_dbfs(float(np.percentile(voiced_rms, 95)))
+        snr_db = speech_level_dbfs - noise_floor_dbfs
+
+    return {
+        'peak_dbfs': _to_dbfs(float(abs_samples.max())),
+        'rms_dbfs': _to_dbfs(float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))),
+        'noise_floor_dbfs': noise_floor_dbfs,
+        'speech_level_dbfs': speech_level_dbfs,
+        'snr_db': snr_db,
+        'clipping_ratio': float(np.mean(abs_samples >= 0.999)),
+    }
+
+
+# SN比がこれ未満ならノイズ除去を有効化する。ノイズ除去は音声も削り
+# 認識精度を下げることがあるため、雑音が明らかに大きい場合に限定する
+DENOISE_SNR_THRESHOLD_DB = 10.0
+# SN比がこれ未満なら強めのノイズ除去をかける
+STRONG_DENOISE_SNR_THRESHOLD_DB = 5.0
+# 元音声のクリップ率がこれを超えたら警告する
+CLIPPING_WARN_RATIO = 0.001
+# 発話レベルがこれ未満なら録音が小さすぎると警告する
+QUIET_SPEECH_WARN_DBFS = -40.0
+
+
+def recommend_preprocessing(stats: Dict[str, float]) -> Dict:
+    """
+    音声レベルの解析結果から前処理パラメータを決める
+
+    Args:
+        stats: analyze_audio_levels の戻り値
+
+    Returns:
+        denoise, noise_reduce_amount, warnings を持つ辞書
+    """
+    snr_db = stats['snr_db']
+    warnings = []
+
+    if snr_db < STRONG_DENOISE_SNR_THRESHOLD_DB:
+        denoise, noise_reduce_amount = True, 0.8
+    elif snr_db < DENOISE_SNR_THRESHOLD_DB:
+        denoise, noise_reduce_amount = True, 0.5
+    else:
+        denoise, noise_reduce_amount = False, 0.0
+
+    if stats['clipping_ratio'] > CLIPPING_WARN_RATIO:
+        warnings.append(
+            f"元音声がクリップしています（{stats['clipping_ratio']:.2%}）。"
+            "歪んだ箇所は誤認識しやすいため、録音レベルを下げて録り直すのが確実です。"
+        )
+    if stats['speech_level_dbfs'] < QUIET_SPEECH_WARN_DBFS:
+        warnings.append(
+            f"発話レベルが小さいです（{stats['speech_level_dbfs']:.1f} dBFS）。"
+            "ノーマライズで持ち上げますが、マイクを近づけると精度が上がります。"
+        )
+
+    return {
+        'denoise': denoise,
+        'noise_reduce_amount': noise_reduce_amount,
+        'warnings': warnings,
+    }
+
+
+def normalize_peak(
+    audio: AudioSegment,
+    target_peak_dbfs: float = NORMALIZE_TARGET_PEAK_DBFS
+) -> AudioSegment:
+    """
+    ピーク音量を目標値に揃える
+
+    平均音量(audio.dBFS)を基準にすると、ピークが 0 dBFS を超えて
+    クリップし音声が歪むため、必ずピーク(audio.max_dBFS)を基準にする。
+    """
+    gain = compute_normalize_gain(audio.max_dBFS, target_peak_dbfs)
+    if gain == 0.0:
+        return audio
+    return audio.apply_gain(gain)
 
 
 def choose_vad_threshold(
@@ -78,6 +222,31 @@ def choose_vad_threshold(
     return min(threshold for threshold, _ in scan_results)
 
 
+def chunks_to_segments(chunks: Optional[List[Dict]]) -> List[Dict]:
+    """
+    Qwen3-ASR のチャンク（約30秒単位）を共通のセグメント形式に変換する
+
+    空文字のチャンク（無音区間）は除外し、idは1から振り直す。
+    """
+    segments = []
+    for chunk in chunks or []:
+        text = chunk.get('text', '')
+        if not text.strip():
+            continue
+        segments.append({
+            'id': len(segments) + 1,
+            'start': chunk['start'],
+            'end': chunk['end'],
+            'text': text,
+        })
+    return segments
+
+
+def build_qwen_context(initial_prompt: Optional[str], hotwords: Optional[str]) -> str:
+    """initial_prompt と hotwords を Qwen3-ASR の context（語彙ヒント）にまとめる"""
+    return ' '.join(part for part in (initial_prompt, hotwords) if part)
+
+
 class FasterWhisperTranscriber:
     """Faster-Whisperを使用した音声文字起こしクラス"""
 
@@ -87,7 +256,8 @@ class FasterWhisperTranscriber:
     MODEL_SIZES = [
         'tiny', 'tiny.en', 'base', 'base.en', 
         'small', 'small.en', 'medium', 'medium.en',
-        'large-v1', 'large-v2', 'large-v3', 'large'
+        'large-v1', 'large-v2', 'large-v3', 'large',
+        'large-v3-turbo', 'turbo', 'distil-large-v3'
     ]
     COMPUTE_TYPES = ['default', 'float16', 'int8_float16', 'int8']
     
@@ -352,6 +522,42 @@ class FasterWhisperTranscriber:
                   f"閾値 {fallback_threshold} を使用します。")
             return fallback_threshold
 
+    def _auto_select_preprocessing(
+        self,
+        audio_path: Path,
+        fallback_noise_reduce_amount: float
+    ) -> tuple:
+        """
+        音声レベルを解析してノイズ除去の要否と強度を決め、結果を表示する
+
+        解析に失敗した場合はノイズ除去なしにフォールバックする。
+
+        Returns:
+            (denoise, noise_reduce_amount)
+        """
+        try:
+            print("音声レベルを解析中...")
+            sampling_rate = 16000
+            audio = decode_audio(str(audio_path), sampling_rate=sampling_rate)
+            stats = analyze_audio_levels(audio, sampling_rate)
+            rec = recommend_preprocessing(stats)
+
+            print(f"  ピーク: {stats['peak_dbfs']:.1f} dBFS / "
+                  f"発話レベル: {stats['speech_level_dbfs']:.1f} dBFS / "
+                  f"背景ノイズ: {stats['noise_floor_dbfs']:.1f} dBFS")
+            print(f"  SN比: {stats['snr_db']:.1f} dB / "
+                  f"クリップ率: {stats['clipping_ratio']:.3%}")
+            if rec['denoise']:
+                print(f"  → ノイズ除去: 有効 (強度 {rec['noise_reduce_amount']:.1f})")
+            else:
+                print("  → ノイズ除去: 不要（認識精度を下げないため無効）")
+            for warning in rec['warnings']:
+                print(f"  警告: {warning}")
+            return rec['denoise'], rec['noise_reduce_amount']
+        except Exception as e:
+            print(f"警告: 音声レベルの解析に失敗しました ({e})。ノイズ除去なしで続行します。")
+            return False, fallback_noise_reduce_amount
+
     def convert_to_wav_if_needed(
         self,
         file_path: Path,
@@ -396,10 +602,9 @@ class FasterWhisperTranscriber:
 
         # ノーマライズ（ピークを-3.0 dBFSに調整）
         if normalize:
-            target_dBFS = -3.0
-            change_in_dBFS = target_dBFS - audio.dBFS
-            print(f"ノーマライズ: {change_in_dBFS:+.1f} dB (ピーク: {audio.dBFS:.1f} → {target_dBFS:.1f} dBFS)")
-            audio = audio.apply_gain(change_in_dBFS)
+            gain = compute_normalize_gain(audio.max_dBFS)
+            print(f"ノーマライズ: {gain:+.1f} dB (ピーク: {audio.max_dBFS:.1f} → {NORMALIZE_TARGET_PEAK_DBFS:.1f} dBFS)")
+            audio = normalize_peak(audio)
 
         # 16kHzにリサンプリング（Whisperの推奨）
         audio = audio.set_frame_rate(16000)
@@ -457,13 +662,15 @@ class FasterWhisperTranscriber:
         log_prob_threshold: float = -1.0,
         no_speech_threshold: float = 0.9,
         initial_prompt: Optional[str] = None,
+        hotwords: Optional[str] = None,
+        condition_on_previous_text: bool = True,
         word_timestamps: bool = False,
         vad_filter: bool = True,
         vad_parameters: Optional[Dict] = None,
         vad_auto_threshold: bool = True,
         normalize: bool = True,
         gain_db: float = 0,
-        denoise: bool = False,
+        denoise: Optional[bool] = False,
         noise_reduce_amount: float = 0.8
     ) -> Dict:
         """
@@ -482,6 +689,9 @@ class FasterWhisperTranscriber:
             log_prob_threshold: ログ確率の閾値
             no_speech_threshold: 無音検出の閾値
             initial_prompt: 初期プロンプト
+            hotwords: 認識させたい固有名詞・専門用語（スペース区切り）
+            condition_on_previous_text: 直前の認識結果を次の区間の文脈に使う。
+                Falseにすると同じ文の繰り返し（ハルシネーション）が起きにくい
             word_timestamps: 単語レベルのタイムスタンプを生成
             vad_filter: Voice Activity Detectionフィルタを使用
             vad_parameters: VADパラメータ
@@ -489,7 +699,7 @@ class FasterWhisperTranscriber:
                 （vad_parametersでthresholdが明示された場合は無効）
             normalize: 音声をピークノーマライズ
             gain_db: ゲイン調整(dB)
-            denoise: ノイズ除去を適用
+            denoise: ノイズ除去を適用。Noneの場合は音声を解析して自動判定
             noise_reduce_amount: ノイズ除去の強度（0.0-1.0）
 
         Returns:
@@ -524,6 +734,12 @@ class FasterWhisperTranscriber:
         temp_file = None
 
         try:
+            # ノイズ除去の要否を音声解析で自動判定
+            if denoise is None:
+                denoise, noise_reduce_amount = self._auto_select_preprocessing(
+                    audio_path, noise_reduce_amount
+                )
+
             # 必要に応じてWAV形式に変換（前処理を含む）
             wav_path = self.convert_to_wav_if_needed(
                 audio_path,
@@ -573,9 +789,8 @@ class FasterWhisperTranscriber:
             else:
                 print("言語を自動検出します...")
             
-            # 文字起こし実行
-            segments, info = self.model.transcribe(
-                str(wav_path),
+            return self._run_model(
+                wav_path,
                 language=language,
                 task=task,
                 beam_size=beam_size,
@@ -587,60 +802,12 @@ class FasterWhisperTranscriber:
                 log_prob_threshold=log_prob_threshold,
                 no_speech_threshold=no_speech_threshold,
                 initial_prompt=initial_prompt,
+                hotwords=hotwords,
+                condition_on_previous_text=condition_on_previous_text,
                 word_timestamps=word_timestamps,
                 vad_filter=vad_filter,
                 vad_parameters=vad_parameters
             )
-            
-            # セグメントをリストに変換（プログレスバー付き）
-            segment_list = []
-            full_text = []
-            
-            print("セグメントを処理中...")
-            for segment in tqdm(segments, desc="セグメント"):
-                seg_dict = {
-                    'id': segment.id,
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text,
-                    'no_speech_prob': segment.no_speech_prob,
-                    'avg_logprob': segment.avg_logprob,
-                    'compression_ratio': segment.compression_ratio,
-                }
-                
-                # 単語レベルのタイムスタンプを追加
-                if word_timestamps and segment.words:
-                    seg_dict['words'] = [
-                        {
-                            'word': word.word,
-                            'start': word.start,
-                            'end': word.end,
-                            'probability': word.probability
-                        }
-                        for word in segment.words
-                    ]
-                
-                segment_list.append(seg_dict)
-                full_text.append(segment.text)
-            
-            # 検出された言語を表示
-            if info.language:
-                print(f"検出された言語: {info.language}")
-            
-            print("文字起こしが完了しました。")
-            
-            # 結果を辞書形式で返す
-            result = {
-                'text': ''.join(full_text),
-                'segments': segment_list,
-                'language': info.language,
-                'language_probability': info.language_probability,
-                'duration': info.duration,
-                'duration_after_vad': info.duration_after_vad,
-                'all_language_probs': info.all_language_probs
-            }
-            
-            return result
             
         finally:
             # 一時ファイルの削除
@@ -654,6 +821,98 @@ class FasterWhisperTranscriber:
                 import shutil
                 shutil.rmtree(video_temp_dir, ignore_errors=True)
     
+    def _run_model(
+        self,
+        wav_path: Path,
+        language: Optional[str],
+        task: str,
+        beam_size: int,
+        best_of: int,
+        patience: float,
+        length_penalty: float,
+        temperature: Union[float, List[float]],
+        compression_ratio_threshold: float,
+        log_prob_threshold: float,
+        no_speech_threshold: float,
+        initial_prompt: Optional[str],
+        hotwords: Optional[str],
+        condition_on_previous_text: bool,
+        word_timestamps: bool,
+        vad_filter: bool,
+        vad_parameters: Optional[Dict]
+    ) -> Dict:
+        """前処理済みの音声をモデルで文字起こしし、結果の辞書を返す"""
+        # 文字起こし実行
+        segments, info = self.model.transcribe(
+            str(wav_path),
+            language=language,
+            task=task,
+            beam_size=beam_size,
+            best_of=best_of,
+            patience=patience,
+            length_penalty=length_penalty,
+            temperature=temperature,
+            compression_ratio_threshold=compression_ratio_threshold,
+            log_prob_threshold=log_prob_threshold,
+            no_speech_threshold=no_speech_threshold,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
+            condition_on_previous_text=condition_on_previous_text,
+            word_timestamps=word_timestamps,
+            vad_filter=vad_filter,
+            vad_parameters=vad_parameters
+        )
+        
+        # セグメントをリストに変換（プログレスバー付き）
+        segment_list = []
+        full_text = []
+        
+        print("セグメントを処理中...")
+        for segment in tqdm(segments, desc="セグメント"):
+            seg_dict = {
+                'id': segment.id,
+                'start': segment.start,
+                'end': segment.end,
+                'text': segment.text,
+                'no_speech_prob': segment.no_speech_prob,
+                'avg_logprob': segment.avg_logprob,
+                'compression_ratio': segment.compression_ratio,
+            }
+            
+            # 単語レベルのタイムスタンプを追加
+            if word_timestamps and segment.words:
+                seg_dict['words'] = [
+                    {
+                        'word': word.word,
+                        'start': word.start,
+                        'end': word.end,
+                        'probability': word.probability
+                    }
+                    for word in segment.words
+                ]
+            
+            segment_list.append(seg_dict)
+            full_text.append(segment.text)
+        
+        # 検出された言語を表示
+        if info.language:
+            print(f"検出された言語: {info.language}")
+        
+        print("文字起こしが完了しました。")
+        
+        # 結果を辞書形式で返す
+        result = {
+            'text': ''.join(full_text),
+            'segments': segment_list,
+            'language': info.language,
+            'language_probability': info.language_probability,
+            'duration': info.duration,
+            'duration_after_vad': info.duration_after_vad,
+            'all_language_probs': info.all_language_probs
+        }
+        
+        return result
+
     def save_result(
         self,
         result: Dict,
@@ -683,7 +942,7 @@ class FasterWhisperTranscriber:
                         end = self._format_timestamp(segment['end'])
                         text = segment['text'].strip()
                         
-                        if include_confidence:
+                        if include_confidence and segment.get('no_speech_prob') is not None:
                             conf = f" [信頼度: {1 - segment['no_speech_prob']:.2f}]"
                             f.write(f"[{start} --> {end}]{conf} {text}\n")
                         else:
@@ -712,7 +971,7 @@ class FasterWhisperTranscriber:
                         'text': seg['text'].strip(),
                     }
                     
-                    if include_confidence:
+                    if include_confidence and 'no_speech_prob' in seg:
                         seg_data.update({
                             'no_speech_prob': seg['no_speech_prob'],
                             'avg_logprob': seg['avg_logprob'],
@@ -782,18 +1041,139 @@ class FasterWhisperTranscriber:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
+class Qwen3ASRTranscriber(FasterWhisperTranscriber):
+    """
+    Qwen3-ASR（MLX実装）を使用した音声文字起こしクラス
+
+    前処理（ノーマライズ・ノイズ除去・動画からの音声抽出）と結果の保存は
+    FasterWhisperTranscriber と共通で、推論部分（_run_model）のみ差し替える。
+    MLXはApple SiliconのGPUを使うため、CPU実行のfaster-whisperより大幅に速い。
+    """
+
+    DEFAULT_MODEL = 'Qwen/Qwen3-ASR-1.7B'
+
+    def __init__(self, model_name: str = DEFAULT_MODEL):
+        """
+        Args:
+            model_name: Hugging FaceのモデルID（例: Qwen/Qwen3-ASR-1.7B, Qwen/Qwen3-ASR-0.6B）
+        """
+        try:
+            from mlx_qwen3_asr import Session
+        except ImportError:
+            raise RuntimeError(
+                "mlx-qwen3-asr がインストールされていません。\n"
+                "Apple Silicon の Mac で uv sync を実行するか、--engine whisper を指定してください。"
+            )
+
+        print(f"モデル '{model_name}' をロード中...")
+        print("デバイス: mlx (Apple Silicon GPU)")
+        self.session = Session(model=model_name)
+        self.model_name = model_name
+        self.device = 'mlx'
+        print(f"モデル '{model_name}' のロードが完了しました。")
+
+    def _run_model(
+        self,
+        wav_path: Path,
+        language: Optional[str] = None,
+        task: str = 'transcribe',
+        initial_prompt: Optional[str] = None,
+        hotwords: Optional[str] = None,
+        **_whisper_only_options
+    ) -> Dict:
+        """Qwen3-ASRで文字起こしする。Whisper固有のデコードオプションは無視する"""
+        if task != 'transcribe':
+            raise ValueError(
+                "Qwen3-ASR は翻訳(translate)に対応していません。--engine whisper を指定してください。"
+            )
+
+        context = build_qwen_context(initial_prompt, hotwords)
+        if context:
+            print(f"語彙ヒント(context): {context}")
+
+        result = self.session.transcribe(
+            str(wav_path),
+            language=language,
+            context=context,
+            return_chunks=True,
+        )
+
+        if result.truncated:
+            print("警告: 一部のチャンクがトークン上限で途中終了しました。末尾が欠けている可能性があります。")
+        if result.finish_reason in ('repetition', 'mixed'):
+            print("警告: 同じ文の繰り返しを検出して生成を打ち切った箇所があります。")
+        if result.language:
+            print(f"検出された言語: {result.language}")
+        print("文字起こしが完了しました。")
+
+        segments = chunks_to_segments(result.chunks)
+        duration = max((c['end'] for c in result.chunks or []), default=0.0)
+        return {
+            'text': result.text,
+            'segments': segments,
+            'language': result.language,
+            'language_probability': None,
+            'duration': duration,
+            'duration_after_vad': None,
+            'all_language_probs': None,
+        }
+
+
+# Qwen3-ASR では効果のない、faster-whisper 専用のCLIオプション
+WHISPER_ONLY_OPTIONS = [
+    'beam_size', 'temperature', 'vad_filter', 'vad_threshold', 'vad_auto_threshold',
+    'vad_min_speech_duration', 'vad_max_speech_duration', 'vad_min_silence_duration',
+    'vad_speech_pad', 'no_speech_threshold', 'condition_on_previous_text',
+    'word_timestamps', 'device', 'compute_type', 'cpu_threads', 'num_workers',
+]
+
+
+def resolve_engine(engine: Optional[str], model: Optional[str]) -> str:
+    """
+    使用するエンジンを決める
+
+    --engine 省略時に Whisper のモデル名（large-v3 など）が指定されていれば
+    whisper を選ぶ。従来の「--model large-v3」だけのコマンドを壊さないため。
+    """
+    if engine:
+        return engine
+    if model in FasterWhisperTranscriber.MODEL_SIZES:
+        return 'whisper'
+    return 'qwen3'
+
+
+WHISPER_DEFAULT_MODEL = 'large-v3'
+
+
+def resolve_model(engine: str, model: Optional[str]) -> str:
+    """指定がなければエンジンごとのデフォルトモデルを返す"""
+    if model:
+        return model
+    if engine == 'whisper':
+        return WHISPER_DEFAULT_MODEL
+    return Qwen3ASRTranscriber.DEFAULT_MODEL
+
+
+def find_changed_options(values: Dict, defaults: Dict) -> List[str]:
+    """デフォルト値から変更されたオプション名を返す"""
+    return [name for name, value in values.items() if value != defaults.get(name)]
+
+
 def main():
     """メイン関数"""
     parser = argparse.ArgumentParser(
-        description='Faster-Whisperを使用した音声/動画文字起こしツール',
+        description='Qwen3-ASR / Faster-Whisperを使用した音声/動画文字起こしツール',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
-  # 基本的な使用方法
+  # 基本的な使用方法（Qwen3-ASR）
   %(prog)s input.mp3
 
-  # モデルと言語を指定
-  %(prog)s input.mp3 --model large-v2 --language ja
+  # 固有名詞・専門用語をヒントとして与える
+  %(prog)s input.mp3 --hotwords "Kubernetes 岡田"
+
+  # faster-whisper を使用
+  %(prog)s input.mp3 --engine whisper --model large-v3 --language ja
 
   # GPUを使用して高速処理
   %(prog)s input.wav --device cuda --compute_type float16
@@ -820,10 +1200,20 @@ def main():
     )
     
     parser.add_argument(
+        '--engine',
+        choices=['qwen3', 'whisper'],
+        default=None,
+        help='文字起こしエンジン。qwen3はApple SiliconのGPUで高速・句読点付き、'
+             'whisperは従来のfaster-whisper。省略時はqwen3だが、'
+             '--modelにWhisperのモデル名を指定した場合はwhisper (default: qwen3)'
+    )
+
+    parser.add_argument(
         '--model',
-        choices=FasterWhisperTranscriber.MODEL_SIZES,
-        default='medium',
-        help='使用するWhisperモデルのサイズ (default: medium)'
+        default=None,
+        help='使用するモデル。qwen3: Hugging FaceのモデルID '
+             f'(default: {Qwen3ASRTranscriber.DEFAULT_MODEL})、'
+             f'whisper: {", ".join(FasterWhisperTranscriber.MODEL_SIZES)} (default: large-v3)'
     )
     
     parser.add_argument(
@@ -978,7 +1368,15 @@ def main():
     parser.add_argument(
         '--denoise',
         action='store_true',
-        help='ノイズ除去を適用（ノイズが多い環境で推奨）'
+        default=None,
+        help='ノイズ除去を強制的に有効化。指定しない場合は音声のSN比を解析して自動判定'
+    )
+
+    parser.add_argument(
+        '--no_denoise',
+        dest='denoise',
+        action='store_false',
+        help='ノイズ除去を強制的に無効化（自動判定もしない）'
     )
 
     parser.add_argument(
@@ -999,6 +1397,19 @@ def main():
         '--initial_prompt',
         type=str,
         help='文字起こしの初期プロンプト（文脈を与える）'
+    )
+
+    parser.add_argument(
+        '--hotwords',
+        type=str,
+        help='認識させたい固有名詞・専門用語をスペース区切りで指定（例: "Kubernetes 岡田 議事録"）'
+    )
+
+    parser.add_argument(
+        '--no_condition_on_previous_text',
+        dest='condition_on_previous_text',
+        action='store_false',
+        help='直前の認識結果を文脈に使わない。同じ文が繰り返し出力される場合に有効'
     )
 
     parser.add_argument(
@@ -1031,14 +1442,34 @@ def main():
             ext = ext_map[args.format]
             output_path = args.audio_file.with_suffix(ext)
         
+        # エンジンの決定
+        engine = resolve_engine(args.engine, args.model)
+        if engine == 'whisper' and args.engine is None:
+            print(f"--model {args.model} が指定されたため、faster-whisperを使用します。")
+        if engine == 'qwen3':
+            ignored = find_changed_options(
+                {name: getattr(args, name) for name in WHISPER_ONLY_OPTIONS},
+                {name: parser.get_default(name) for name in WHISPER_ONLY_OPTIONS},
+            )
+            if ignored:
+                print(f"警告: 次のオプションはQwen3-ASRでは無視されます: {', '.join('--' + n for n in ignored)}")
+                print("      これらを使う場合は --engine whisper を指定してください。")
+
         # 文字起こし実行
-        transcriber = FasterWhisperTranscriber(
-            model_name=args.model,
-            device=args.device,
-            compute_type=args.compute_type,
-            cpu_threads=args.cpu_threads,
-            num_workers=args.num_workers
-        )
+        if engine == 'qwen3':
+            args.model = resolve_model(engine, args.model)
+            transcriber = Qwen3ASRTranscriber(model_name=args.model)
+            # Qwen3-ASRは無音区間を自前で処理するため、Whisper用のVADは使わない
+            args.vad_filter = False
+        else:
+            args.model = resolve_model(engine, args.model)
+            transcriber = FasterWhisperTranscriber(
+                model_name=args.model,
+                device=args.device,
+                compute_type=args.compute_type,
+                cpu_threads=args.cpu_threads,
+                num_workers=args.num_workers
+            )
         model_load_time = time.time() - model_load_start
 
         # 温度パラメータの処理
@@ -1071,6 +1502,8 @@ def main():
             beam_size=args.beam_size,
             temperature=temperature,
             initial_prompt=args.initial_prompt,
+            hotwords=args.hotwords,
+            condition_on_previous_text=args.condition_on_previous_text,
             word_timestamps=args.word_timestamps,
             vad_filter=args.vad_filter,
             vad_parameters=vad_parameters,
@@ -1107,7 +1540,7 @@ def main():
                     print("\n警告: VADによる削減率が90%を超えています。")
                     print("閾値の自動選択が有効な場合、録音の大半が実際に無音である可能性が高いですが、")
                     print("取りこぼしが疑われる場合は以下を試してください:")
-                    print(f"  uv run python {Path(__file__).name} {args.audio_file} --model {args.model} --language {args.language or 'ja'} --no_vad_filter")
+                    print(f"  uv run python {Path(__file__).name} {args.audio_file} --engine whisper --model {args.model} --language {args.language or 'ja'} --no_vad_filter")
                     print("必要に応じて:")
                     print("  --vad_threshold 0.05")
                     print("  --vad_speech_pad 1000")
