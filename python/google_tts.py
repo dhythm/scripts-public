@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import os
+import math
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional, Literal
 
 import typer
-from google.api_core.exceptions import GoogleAPICallError, InvalidArgument
+from google.api_core.exceptions import GoogleAPICallError, InvalidArgument, TooManyRequests, ServerError
 from google.cloud import texttospeech
 
 app = typer.Typer(add_completion=False, help="日本語テキストを音声ファイルに変換します。")
@@ -171,12 +172,16 @@ def _load_text(text: Optional[str], text_file: Optional[Path]) -> str:
     if text and text_file:
         raise typer.BadParameter("--text と --text-file は同時に指定できません。")
     if text:
-        return text
-    if text_file:
+        content = text
+    elif text_file:
         if not text_file.exists():
             raise typer.BadParameter(f"テキストファイルが見つかりません: {text_file}")
-        return text_file.read_text(encoding="utf-8").strip()
-    raise typer.BadParameter("--text か --text-file のいずれかを指定してください。")
+        content = text_file.read_text(encoding="utf-8").strip()
+    else:
+        raise typer.BadParameter("--text か --text-file のいずれかを指定してください。")
+    if not content.strip():
+        raise typer.BadParameter("読み上げるテキストが空です。")
+    return content
 
 
 def _ensure_credentials(credentials_path: Optional[Path]) -> None:
@@ -231,6 +236,22 @@ def synthesize_speech(
     return output_path
 
 
+def _synthesize_with_retries(*, max_attempts: int, retry_delay: float, **kwargs) -> Path:
+    if max_attempts < 1:
+        raise ValueError("max_retries は1以上の最大試行回数を指定してください")
+    if not math.isfinite(retry_delay) or retry_delay < 0:
+        raise ValueError("retry_delay は有限の0以上を指定してください")
+    for attempt in range(max_attempts):
+        try:
+            return synthesize_speech(**kwargs)
+        except GoogleAPICallError as error:
+            if not isinstance(error, (TooManyRequests, ServerError)) or attempt + 1 == max_attempts:
+                raise
+            typer.echo(f"API エラー (試行 {attempt + 1}/{max_attempts}): {error}")
+            time.sleep(retry_delay * (2 ** attempt))
+    raise AssertionError("unreachable")
+
+
 def synthesize_long_speech(
     text: str,
     output_path: Path,
@@ -257,18 +278,23 @@ def synthesize_long_speech(
         pitch: ピッチ
         sample_rate_hz: サンプルレート
         show_progress: 進捗表示を行うか
-        max_retries: API 失敗時のリトライ回数
+        max_retries: APIの最大試行回数（短文・各チャンクに共通）
         retry_delay: リトライ間隔（秒）
 
     Returns:
         出力ファイルパス
     """
+    if max_retries < 1:
+        raise ValueError("max_retries は1以上の最大試行回数を指定してください")
+    if not math.isfinite(retry_delay) or retry_delay < 0:
+        raise ValueError("retry_delay は有限の0以上を指定してください")
     # テキストを分割
     chunks = split_text_for_tts(text, max_bytes=4800)
 
     if len(chunks) == 1:
         # 分割不要な場合は直接処理
-        return synthesize_speech(
+        return _synthesize_with_retries(
+            max_attempts=max_retries, retry_delay=retry_delay,
             text=chunks[0],
             output_path=output_path,
             language_code=language_code,
@@ -290,27 +316,12 @@ def synthesize_long_speech(
 
             chunk_path = tmp_path / f"chunk_{i:04d}.{audio_format}"
 
-            # リトライ付きで API 呼び出し
-            for attempt in range(max_retries):
-                try:
-                    synthesize_speech(
-                        text=chunk,
-                        output_path=chunk_path,
-                        language_code=language_code,
-                        voice_name=voice_name,
-                        audio_format=audio_format,
-                        speaking_rate=speaking_rate,
-                        pitch=pitch,
-                        sample_rate_hz=sample_rate_hz,
-                    )
-                    break
-                except (GoogleAPICallError, InvalidArgument) as e:
-                    if attempt == max_retries - 1:
-                        raise
-                    typer.echo(
-                        f"API エラー (試行 {attempt + 1}/{max_retries}): {e}"
-                    )
-                    time.sleep(retry_delay * (2**attempt))
+            _synthesize_with_retries(
+                max_attempts=max_retries, retry_delay=retry_delay,
+                text=chunk, output_path=chunk_path, language_code=language_code,
+                voice_name=voice_name, audio_format=audio_format,
+                speaking_rate=speaking_rate, pitch=pitch, sample_rate_hz=sample_rate_hz,
+            )
 
             audio_paths.append(chunk_path)
 
@@ -335,7 +346,7 @@ def run(
     pitch: float = typer.Option(0.0, "--pitch", help="ピッチ調整 (-20.0 から 20.0 推奨)"),
     sample_rate_hz: Optional[int] = typer.Option(None, "--sample-rate", help="サンプルレート (Hz)"),
     credentials_path: Optional[Path] = typer.Option(None, "--credentials", help="サービスアカウントJSONのパス"),
-    max_retries: int = typer.Option(3, "--max-retries", help="API失敗時のリトライ回数"),
+    max_retries: int = typer.Option(3, "--max-retries", min=1, help="APIの最大試行回数（1以上）"),
     no_progress: bool = typer.Option(False, "--no-progress", help="進捗表示を無効化"),
 ) -> None:
     """Google Text-to-Speech で日本語の音声ファイルを生成します。"""
@@ -353,33 +364,15 @@ def run(
     text_bytes = len(text_content.encode("utf-8"))
 
     try:
-        if text_bytes <= 4800:
-            # 短いテキストは直接処理
-            result_path = synthesize_speech(
-                text=text_content,
-                output_path=output,
-                language_code=language_code,
-                voice_name=voice_name,
-                audio_format=normalized_format,  # type: ignore[arg-type]
-                speaking_rate=speaking_rate,
-                pitch=pitch,
-                sample_rate_hz=sample_rate_hz,
-            )
-        else:
-            # 長いテキストは分割処理
+        if text_bytes > 4800:
             typer.echo(f"テキストが {text_bytes} バイトのため、分割処理を行います。")
-            result_path = synthesize_long_speech(
-                text=text_content,
-                output_path=output,
-                language_code=language_code,
-                voice_name=voice_name,
-                audio_format=normalized_format,  # type: ignore[arg-type]
-                speaking_rate=speaking_rate,
-                pitch=pitch,
-                sample_rate_hz=sample_rate_hz,
-                show_progress=not no_progress,
-                max_retries=max_retries,
-            )
+        result_path = synthesize_long_speech(
+            text=text_content, output_path=output, language_code=language_code,
+            voice_name=voice_name, audio_format=normalized_format,
+            speaking_rate=speaking_rate, pitch=pitch, sample_rate_hz=sample_rate_hz,
+            show_progress=not no_progress, max_retries=max_retries,
+        )
+
     except (GoogleAPICallError, InvalidArgument) as error:
         typer.secho(f"APIエラーが発生しました: {error}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from error
