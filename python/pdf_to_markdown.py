@@ -22,11 +22,12 @@
 
 import sys
 import re
+import os
 import time
 import argparse
 import hashlib
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 # .envファイルから環境変数を読み込む
 try:
