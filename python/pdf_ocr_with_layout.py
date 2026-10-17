@@ -9,15 +9,48 @@ from google.cloud import documentai
 from google.cloud import storage
 
 
-def get_text_from_layout(layout: documentai.Document.Page.Layout, text: str) -> str:
-    """Document AIのLayout情報からテキストを抽出する"""
-    text_segments = layout.text_anchor.text_segments
-    if not text_segments:
-        return ""
-    return "".join(
-        text[int(segment.start_index) : int(segment.end_index)]
-        for segment in text_segments
-    )
+def get_text_from_layout(
+    layout: documentai.Document.Page.Layout, text: str, text_offset: int = 0
+) -> str:
+    """Resolve shard-local anchors against the reconstructed document text."""
+    parts = []
+    for segment in layout.text_anchor.text_segments:
+        start = int(segment.start_index) + text_offset
+        end = int(segment.end_index) + text_offset
+        if not 0 <= start <= end <= len(text):
+            raise ValueError(f"テキスト参照が範囲外です: [{start}, {end}), length={len(text)}")
+        parts.append(text[start:end])
+    return "".join(parts)
+
+
+def prepare_document_shards(document_shards: list[documentai.Document]):
+    """Validate a complete shard set and retain each page's local text origin.
+
+    TextSegment indices are local to a shard. ShardInfo.text_offset maps them
+    to global text, including anchors that extend across a shard boundary.
+    """
+    if not document_shards:
+        raise ValueError("Document AIのシャードがありません。")
+    ordered = sorted(document_shards, key=lambda doc: int(doc.shard_info.shard_index))
+    text_parts = []
+    pages_with_offsets = []
+    expected_offset = 0
+    for index, document in enumerate(ordered):
+        info = document.shard_info
+        if len(ordered) > 1 or info.shard_count:
+            if int(info.shard_count) != len(ordered) or int(info.shard_index) != index:
+                raise ValueError("Document AIのシャードが不足または重複しています。")
+        offset = int(info.text_offset)
+        if offset != expected_offset:
+            raise ValueError(f"シャードのテキスト位置が不連続です: expected={expected_offset}, actual={offset}")
+        if document.error.code:
+            raise ValueError(f"Document AIのシャード処理エラー: {document.error.message}")
+        text_parts.append(document.text)
+        pages_with_offsets.extend((page, offset) for page in document.pages)
+        expected_offset += len(document.text)
+    pages_with_offsets.sort(key=lambda item: item[0].page_number)
+    return "".join(text_parts), pages_with_offsets
+
 
 def get_bounding_box(bounding_poly: Optional[documentai.BoundingPoly]) -> Tuple[float, float, float, float]:
     """BoundingPolyから正規化された座標の最小/最大値を取得する"""
@@ -157,29 +190,20 @@ def batch_process_document_with_bounds(
         # 1. 全てのシャードをパースしてメモリに読み込む
         document_shards = [documentai.Document.from_json(blob.download_as_text()) for blob in json_blobs]
 
-        # 2. Document AIの仕様に基づき、全体のテキストは最初のシャードにしか含まれない
-        full_text = document_shards[0].text
+        # Shard-local anchors must be translated by their own text offset.
+        full_text, pages_with_offsets = prepare_document_shards(document_shards)
 
-        # 3. 全シャードから全てのページを収集する
-        all_pages = []
-        for document in document_shards:
-            all_pages.extend(document.pages)
-        
-        # 4. ページ番号順に明確にソートする
-        all_pages.sort(key=lambda p: p.page_number)
-
-        print(f"結果を解析中...（合計{len(all_pages)}ページ）")
+        print(f"結果を解析中...（合計{len(pages_with_offsets)}ページ）")
 
         # 5. ソート済みのページリストを処理する
-        for page in all_pages:
+        for page, text_offset in pages_with_offsets:
             print(f"ページ {page.page_number} を処理中...")
             page_text = ""
             for block in page.blocks:
                 block_x_min, block_x_max, block_y_min, block_y_max = get_bounding_box(block.layout.bounding_poly)
                 if (block_y_min >= y_min and block_y_max <= y_max and
                     block_x_min >= x_min and block_x_max <= x_max):
-                    # 2で取得した完全なテキスト(full_text)を全てのページの解析に使う
-                    block_text = get_text_from_layout(block.layout, full_text)
+                    block_text = get_text_from_layout(block.layout, full_text, text_offset)
                     page_text += block_text
 
             if page_text.strip():
