@@ -1,11 +1,8 @@
 {
   "tasks": {
-    "dev": "deno run --watch --allow-net --allow-read --allow-write src/main.ts",
-    "start": "deno run --allow-net --allow-read --allow-write src/main.ts",
     "test": "deno test --allow-all",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "check": "deno check src/main.ts",
     "meeting": "deno run --allow-net --allow-env --allow-read meeting-scheduler/app.ts",
     "meeting:check": "deno check meeting-scheduler/app.ts",
     "meeting:auth": "deno run --allow-net --allow-env --allow-read --allow-write meeting-scheduler/tools/get-google-refresh-token.ts",
@@ -14,9 +11,6 @@
   "compilerOptions": {
     "lib": ["deno.window", "deno.unstable"],
     "strict": true
-  },
-  "imports": {
-    "std/": "https://deno.land/std@0.220.0/"
   },
   "exclude": [
     ".git"

@@ -13,7 +13,7 @@
 | ルート | SVG用の小さいPython環境 | `uv sync` |
 | `python/` | PDF OCR・文字起こし・サイト調査・画像・音声などのPython CLI | `cd python` → `uv sync` |
 | `javascript/node-ts/` | 情報源調査、TTSのNode CLI | 同ディレクトリで `npm ci` |
-| `javascript/deno-ts/` | 会議候補、PRTIMES等のDeno CLI | 同ディレクトリのREADME・`deno.json`参照 |
+| `javascript/deno-ts/` | 会議の日程調整（meeting-scheduler）のDeno CLI | 同ディレクトリのREADME・`deno.json`参照 |
 
 各Python環境は別の `pyproject.toml` と `uv.lock` を使います。`site-inspector` のentry pointは `python/` 側にのみあります。
 音声検証で使用中の環境や共有依存を置き換える必要はありません。既存の仮想環境に対する一括更新は避け、対象ツールの手順を選んでください。
