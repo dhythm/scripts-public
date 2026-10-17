@@ -1,4 +1,4 @@
-"""Atomic text publication shared by the local PDF command-line tools."""
+"""出力ファイルを上書き事故なく原子的に保存する"""
 import os
 import stat
 import tempfile

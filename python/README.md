@@ -104,31 +104,6 @@ uv add ruff
 uv run ruff check
 ```
 
-## Google PDF パイプライン
-
-Google検索APIとPlaywrightを組み合わせ、PDFの取得から文字抽出・LLM整形までを自動化するスクリプト `google_pdf_pipeline.py` を追加しました。
-
-### 必要な環境変数
-
-- `GOOGLE_API_KEY`
-- `GOOGLE_CSE_ID`
-- `OPENAI_API_KEY`（LLM整形を行う場合）
-
-`python/.env.example` を `python/.env` にコピーし、値を設定してください（ファイルはリポジトリ直下ではなく `python/` ディレクトリ内に配置しています）。
-
-### 実行例
-
-```sh
-# Google検索で上位1件のPDFを処理し、そのまま標準出力にJSONで表示
-uv run python google_pdf_pipeline.py "site:prtimes.jp プレスリリース PDF" -n 1
-
-# OCRフォールバックを無効化し、結果をファイルに保存
-uv run python google_pdf_pipeline.py "教育委員会 PDF 報告書" -n 2 --disable-ocr --output results.json
-
-# 追加の整形指示を与えてLLMに要約させる
-uv run python google_pdf_pipeline.py "サステナビリティ レポート PDF" --prompt "要約の最後に推奨アクションを2つ挙げてください。"
-```
-
 ## 音声文字起こしツール
 
 音声・動画ファイルをローカルで文字起こしするツールです。
@@ -413,40 +388,59 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 uv sync
 ```
 
-## PDF OCR (日本語対応)
+## PDF OCR (pdfocr)
 
-PDFファイルからOCRを使用してテキストを抽出するツールです。
+PDFをローカルだけでテキスト/Markdownにするツールです。クラウドAPIは使いません。
+ページごとにテキスト層の品質を判定し、使えるページはそのまま抽出、スキャン画像や文字化けしたページだけをOCRします。
 
-### セットアップ
+| エンジン | 指定 | 特徴 |
+|---------|------|------|
+| NDLOCR-Lite | デフォルト（`--engine ndl`） | 国立国会図書館のOCR。縦書きの和書に強く、GPUなしで高速。ルビ・柱・ノンブルは本文と別の領域として検出し、文字認識の対象から外す設計。CC BY 4.0 |
+| YomiToku | `--engine yomitoku` | 読み順の推定や表に強い。ルビは除去する。Apple SiliconではGPU（mps）を使用。個人利用は無料（商用は有料、CC BY-NC-SA 4.0） |
 
-1. 依存関係のインストール
+どちらも依存パッケージのバージョンがこのプロジェクトと衝突するため、`~/.cache/` 配下の専用の仮想環境にインストールして呼び出します。
+
+### セットアップ（初回のみ）
+
 ```sh
-uv sync
-```
-
-2. 日本語OCRのセットアップ
-```sh
-./setup_japanese_ocr.sh
+uv run python -m pdfocr setup ndl        # NDLOCR-Lite（約700MB）
+uv run python -m pdfocr setup yomitoku   # YomiToku を使う場合（PyTorchを含むため数GB）
 ```
 
 ### 使用方法
 
 ```sh
-uv run python pdf_ocr.py <PDFファイル>
+# テキストとして保存（book.txt）
+uv run python -m pdfocr book.pdf
+
+# Markdownとして保存（章・節の見出し、原書の著作権表記を整形）
+uv run python -m pdfocr book.pdf --format md
+
+# YomiToku で全ページOCR
+uv run python -m pdfocr scan.pdf --engine yomitoku --ocr always
+
+# 既存の出力を上書き
+uv run python -m pdfocr book.pdf --force
 ```
 
-例:
-```sh
-uv run python pdf_ocr.py 000928313.pdf
-```
+### 主なオプション
 
-### 特徴
+| オプション | 説明 | デフォルト |
+|-----------|------|-----------|
+| `--format` | `txt` または `md` | `txt` |
+| `--engine` | `ndl` または `yomitoku` | `ndl` |
+| `--ocr` | `auto`（テキスト層が使えないページだけOCR）/ `always`（全ページOCR）/ `never`（テキスト層のみ） | `auto` |
+| `--dpi` | OCR時にページを画像化する解像度 | 300 |
+| `--keep-margins` | テキスト層の抽出で、ページ上下の帯（上12%・下13%）にある柱とページ番号を除外しない | 除外する |
+| `-o`, `--output` | 出力先 | PDFと同じ場所 |
+| `--force` | 既存の出力を上書き | 上書きしない |
 
-- 日本語と英語の両方に対応
-- 画像ベースのPDF（スキャンされたPDF）からもテキスト抽出可能
-- 画像前処理により、OCRの精度を向上
-- 各ページごとにテキストを抽出し、`.ocr.txt`ファイルとして保存
-- 既存の出力ファイルは上書きしません。再実行して置き換える場合は `--force` を指定します（詳細は [PDF_OUTPUTS.md](PDF_OUTPUTS.md)）
+### 処理の内容
+
+- **テキスト層の判定**: 文字がほとんどない、`(cid:NNN)` や `U+FFFD` が多い、想定外の文字（文字化け）が多いページはOCRに回します。
+- **柱とページ番号の除去（テキスト層）**: ページ上下の帯に完全に収まっていて、数字だけのもの（ページ番号）か、2ページ以上に繰り返し現れるもの（柱）だけを除きます。帯から始まる縦書きの列や、一度だけ現れる章見出しは残ります。
+- **共通の後処理**: 連続する重複ページの除去、縦書き用の約物（﹁﹂︑︒ など）の変換、日本語の文字間に入った半角スペースの除去。
+- **安全な保存**: 一時ファイルに書いてから置き換えるため、途中で失敗しても既存の出力は壊れません。入力PDF自体やそのハードリンクには出力できません。テキストが全く抽出できなかった場合は保存せず、終了コード1で終了します。
 
 ## Google Text-to-Speech 変換 (google_tts.py)
 

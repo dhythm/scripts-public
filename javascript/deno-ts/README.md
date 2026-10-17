@@ -6,59 +6,32 @@ Deno を使用した TypeScript ツール集です。
 
 ```
 deno-ts/
-├── src/              # サンプルアプリケーション
-│   └── main.ts       # デモ用のメインファイル
-├── check-pdf/        # PDFテキストチェックツール
-│   ├── check-pdf-text.ts
-│   ├── check-pdf-text-simple.ts
-│   └── README.md
-├── pdf-extract/      # PDF テキスト抽出ツール（Google Cloud連携）
-│   ├── pdf-extract.ts
-│   ├── app.ts
-│   ├── cli/
-│   ├── clients/
-│   ├── handlers/
-│   ├── processors/
-│   ├── types/
-│   ├── utils/
-│   └── README.md
-├── deno.json         # Deno設定ファイル
-├── deno.lock         # ロックファイル
-└── README.md         # このファイル
+├── src/                # サンプルアプリケーション
+│   └── main.ts         # デモ用のメインファイル
+├── meeting-scheduler/  # 会議の日程調整ツール（Google Calendar + HubSpot）
+├── prtimes-scraper/    # PR TIMES のスクレイパー
+├── deno.json           # Deno設定ファイル
+├── deno.lock           # ロックファイル
+└── README.md           # このファイル
 ```
 
 ## ツール一覧
 
-### 1. check-pdf - PDFテキストチェックツール
+### 1. meeting-scheduler - 会議の日程調整ツール
 
-PDFファイルにテキストレイヤーが含まれているかを確認します。
-
-```bash
-# pdf-libバージョン
-deno task check-pdf <PDFファイルパス>
-
-# 軽量バージョン（外部ライブラリ不要）
-deno task check-pdf-simple <PDFファイルパス>
-```
-
-詳細は [check-pdf/README.md](check-pdf/README.md) を参照してください。
-
-### 2. pdf-extract - PDFテキスト抽出ツール
-
-Google Cloud Vision API または Document AI を使用してPDFからテキストを抽出します。
+参加者の Google Calendar の空き状況から、会議の候補日時を提案します。
 
 ```bash
-# 基本的な使用方法
-deno task pdf-extract <入力ディレクトリ>
-
-# Document AI を使用
-deno task pdf-extract <入力ディレクトリ> -a documentai
-
-# 詳細オプション付き
-deno task pdf-extract <入力ディレクトリ> -o <出力ディレクトリ> -v
+deno task meeting --help
 ```
 
-詳細は [pdf-extract/README.md](pdf-extract/README.md) を参照してください。
+詳細は [meeting-scheduler/README.md](meeting-scheduler/README.md) を参照してください。
+
+### 2. prtimes-scraper - PR TIMES スクレイパー
+
+詳細は [prtimes-scraper/README.md](prtimes-scraper/README.md) を参照してください。
+
+PDFのテキスト抽出・OCRは Python の `pdfocr` に統合しました（[python/README.md](../../python/README.md) を参照）。
 
 ## 開発
 
