@@ -60,5 +60,4 @@ export interface HubSpotConfig {
 
 export interface OpenAIConfig {
   apiKey: string;
-  model?: string;
 }

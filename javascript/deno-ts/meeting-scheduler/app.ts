@@ -142,7 +142,6 @@ async function main() {
     const analyzer = new AvailabilityAnalyzer(
       options.useOpenAI ? {
         apiKey: Deno.env.get("OPENAI_API_KEY") || "",
-        model: Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini",
       } as OpenAIConfig : undefined
     );
 
