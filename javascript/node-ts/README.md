@@ -259,3 +259,11 @@ GOOGLE_APPLICATION_CREDENTIALS_BASE64=XXX npm run stt:batch -- \
 | `--help, -h` | ヘルプを表示 |
 
 実行後、各単語に付与された `speakerTag` と時間情報を標準出力に表示します。StreamingRecognize では話者識別が効かないため、本ツールは BatchRecognize 専用です。
+
+## 情報収集CLIの入出力と取得制限
+
+`primary-harvest` の出力先省略時と `source-origin --json` の標準出力は結果JSONだけです。進捗・診断ログは標準エラーに出すため、そのままJSONとしてパイプ処理できます。`--output` の親ディレクトリはAPI呼出し前に作成・書込み可否を確認します。既存の通常ファイルへの結果保存は上書きします。
+
+`primary-harvest` はキーワードの一部または全件が失敗した場合、取得済みの結果とエラーをJSONに残し、終了コード1を返します。
+
+URL本文およびBing PDF検索ページのHTTP取得は、正常ステータスとHTML/XHTML/プレーンテキストのContent-Typeを検査し、リクエストから本文取得まで30秒、本文5MiBまでに制限します。PDF等のバイナリやエラーページを記事本文としてモデルへ送信しません。ブラウザ操作を要するページやContent-Type未設定のページは取得失敗になります。

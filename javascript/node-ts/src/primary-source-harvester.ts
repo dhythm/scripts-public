@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import OpenAI from "openai";
+import { fetchResearchText, prepareOutputPath } from "./research-io.js";
 import type {
   FunctionTool,
   Response,
@@ -84,13 +85,6 @@ const DEBUG_DIR = "reports/debug";
 const POLL_INTERVAL_MS = 1500;
 
 type ConsoleMethodName = "log" | "info" | "warn" | "error";
-
-patchConsoleWithTimestamps();
-const RUN_STARTED_AT = Date.now();
-process.once("exit", () => {
-  const elapsedMs = Date.now() - RUN_STARTED_AT;
-  console.log(`⏱️ トータル実行時間: ${(elapsedMs / 1000).toFixed(1)} 秒`);
-});
 
 const structuredOutputSchema = {
   name: "source_harvest_payload",
@@ -188,7 +182,7 @@ const systemPrompt = `\
 - ページ本文に具体的なデータ・記述が無い場合、そのソースは採用せず別のソースを探す。
 `;
 
-async function main() {
+export async function main() {
   const options = parseCliOptions();
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -196,14 +190,15 @@ async function main() {
     process.exit(1);
   }
 
+  prepareOutputPath(options.outputPath);
   const client = new OpenAI({ apiKey });
   const reports: KeywordReport[] = [];
 
   for (const keyword of options.keywords) {
-    console.log(`🔎 キーワード「${keyword}」の調査を開始します`);
+    console.error(`🔎 キーワード「${keyword}」の調査を開始します`);
     try {
       const report = await harvestKeyword(client, keyword, options);
-      console.log(
+      console.error(
         `✅ ${keyword}: 一次 ${report.stats.primaryCount} 件 / 二次 ${report.stats.secondaryCount} 件`
       );
       reports.push(report);
@@ -220,6 +215,7 @@ async function main() {
     }
   }
 
+  if (reports.some((report) => report.error)) process.exitCode = 1;
   const payload = { generatedAt: new Date().toISOString(), reports };
 
   if (options.outputPath) {
@@ -229,9 +225,9 @@ async function main() {
       JSON.stringify(payload, null, 2),
       "utf-8"
     );
-    console.log(`📁 結果を ${options.outputPath} に保存しました`);
+    console.error(`📁 結果を ${options.outputPath} に保存しました`);
   } else {
-    console.log(JSON.stringify(payload, null, 2));
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   }
 }
 
@@ -675,7 +671,7 @@ async function executeResponseWorkflow(
     }
 
     passCount += 1;
-    console.log(
+    console.error(
       `🛠️ [${params.keyword}] ツール呼び出し #${passCount}: ${pendingCalls
         .map((call) => call.name)
         .join(", ")}`
@@ -736,7 +732,7 @@ async function submitAndPollResponse(
   };
   const requestStartedAt = Date.now();
   const initialResponse = await client.responses.create(requestPayload);
-  console.log(`🚀 [${args.keyword}] リクエスト送信: id=${initialResponse.id}`);
+  console.error(`🚀 [${args.keyword}] リクエスト送信: id=${initialResponse.id}`);
   const finalResponse = await pollResponseUntilTerminal(
     client,
     initialResponse.id,
@@ -747,7 +743,7 @@ async function submitAndPollResponse(
   );
   const elapsedSec = ((Date.now() - requestStartedAt) / 1000).toFixed(1);
   const tokenInfo = formatUsage(finalResponse.usage);
-  console.log(
+  console.error(
     `✅ [${args.keyword}] リクエスト id=${
       finalResponse.id
     } 完了 (${elapsedSec}秒${tokenInfo ? ", " + tokenInfo : ""})`
@@ -766,7 +762,7 @@ async function pollResponseUntilTerminal(
   while (true) {
     const response = await client.responses.retrieve(responseId);
     if (response.status !== lastStatus) {
-      console.log(`⌛ [${context.keyword}] ステータス: ${response.status}`);
+      console.error(`⌛ [${context.keyword}] ステータス: ${response.status}`);
       lastStatus = response.status;
     }
 
@@ -835,7 +831,7 @@ function logToolActivities(response: Response, keyword: string) {
   }
 
   for (const line of logs) {
-    console.log(line);
+    console.error(line);
   }
 }
 
@@ -883,7 +879,7 @@ async function handleFunctionCall(
   }
 }
 
-async function pdfSearch(
+export async function pdfSearch(
   query: string,
   limit: number,
   siteFilters: string[]
@@ -898,7 +894,7 @@ async function pdfSearch(
   const searchParams = new URLSearchParams({ q, setlang: "ja" });
   const url = `https://www.bing.com/search?${searchParams.toString()}`;
 
-  const response = await fetch(url, {
+  const { body: html } = await fetchResearchText(url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -907,11 +903,6 @@ async function pdfSearch(
     redirect: "follow",
   });
 
-  if (!response.ok) {
-    throw new Error(`Bing検索が失敗しました (status ${response.status})`);
-  }
-
-  const html = await response.text();
   const root = parseHtml(html);
   const items = root.querySelectorAll("li.b_algo");
   const hits: PdfSearchHit[] = [];
@@ -1110,7 +1101,7 @@ function ensureParentDir(pathStr: string) {
 
 function debugLog(enabled: boolean, message: string) {
   if (enabled) {
-    console.log(`[debug] ${message}`);
+    console.error(`[debug] ${message}`);
   }
 }
 
@@ -1146,10 +1137,15 @@ function truncate(text: string, length: number): string {
   return `${text.slice(0, length)}…`;
 }
 
-main().catch((error) => {
-  console.error(
-    "致命的なエラーが発生しました:",
-    error instanceof Error ? error.message : error
-  );
-  process.exit(1);
-});
+if (require.main === module) {
+  patchConsoleWithTimestamps();
+  const startedAt = Date.now();
+  process.once("exit", () => console.error(`⏱️ トータル実行時間: ${((Date.now() - startedAt) / 1000).toFixed(1)} 秒`));
+  main().catch((error) => {
+    console.error(
+      "致命的なエラーが発生しました:",
+      error instanceof Error ? error.message : error
+    );
+    process.exit(1);
+  });
+}

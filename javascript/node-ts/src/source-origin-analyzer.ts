@@ -2,6 +2,7 @@ import { parse as parseHtml } from "node-html-parser";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import OpenAI from "openai";
+import { fetchResearchText, prepareOutputPath } from "./research-io.js";
 import type {
   Response,
   WebSearchTool,
@@ -141,11 +142,7 @@ function logWithTimestamp(level: LogLevel, message: string | string[]): void {
   const timestamp = new Date().toISOString();
   for (const line of lines) {
     const formatted = `[${timestamp}] [${level}] ${line}`;
-    if (level === "ERROR") {
-      console.error(formatted);
-    } else {
-      console.log(formatted);
-    }
+    console.error(formatted);
   }
 }
 
@@ -153,7 +150,7 @@ const logInfo = (message: string | string[]) => logWithTimestamp("INFO", message
 const logDebug = (message: string | string[]) => logWithTimestamp("DEBUG", message);
 const logError = (message: string | string[]) => logWithTimestamp("ERROR", message);
 
-async function main() {
+export async function main() {
   try {
     const options = parseCliOptions();
     const apiKey = process.env.OPENAI_API_KEY;
@@ -162,6 +159,7 @@ async function main() {
       process.exit(1);
     }
 
+    prepareOutputPath(options.outputPath);
     logInfo(`URL解析を開始: ${options.url}`);
     const client = new OpenAI({ apiKey });
     const fetchResult = await fetchPage(options.url);
@@ -206,7 +204,7 @@ async function main() {
 
     if (options.asJson) {
       logInfo("結果をJSON形式で標準出力へ書き出します");
-      console.log(JSON.stringify(finalResult, null, 2));
+      process.stdout.write(`${JSON.stringify(finalResult, null, 2)}\n`);
     } else {
       logInfo("結果を整形テキストとして表示します");
       printHumanReadable(finalResult);
@@ -215,7 +213,7 @@ async function main() {
     logError(
       `解析に失敗しました: ${error instanceof Error ? error.message : String(error)}`
     );
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
@@ -308,8 +306,8 @@ function buildUserLocation(values: {
   };
 }
 
-async function fetchPage(url: string): Promise<FetchResult> {
-  const response = await fetch(url, {
+export async function fetchPage(url: string): Promise<FetchResult> {
+  const { response, body } = await fetchResearchText(url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -320,7 +318,6 @@ async function fetchPage(url: string): Promise<FetchResult> {
     redirect: "follow",
   });
 
-  const body = await response.text();
   return {
     requestedUrl: url,
     finalUrl: response.url,
@@ -583,4 +580,4 @@ function printHumanReadable(result: FinalResult): void {
   }
 }
 
-main();
+if (require.main === module) void main();
