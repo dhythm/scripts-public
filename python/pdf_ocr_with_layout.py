@@ -1,4 +1,7 @@
 import argparse
+import os
+import tempfile
+from contextlib import contextmanager
 import uuid
 from pathlib import Path
 from typing import Tuple, Optional
@@ -90,6 +93,41 @@ def cleanup_run_blobs(blobs):
             print(f"一時ファイルを削除できませんでした ({blob.name}): {error}")
 
 
+@contextmanager
+def atomic_text_output(output_path: Optional[Path]):
+    """Reserve a private sibling temp file and publish without replacing a file.
+
+    The hard link publishes fully written bytes atomically and fails if another
+    process creates the destination after preflight. Only our temp is removed.
+    """
+    if output_path is None:
+        yield None
+        return
+    output_path = Path(output_path)
+    if output_path.exists() or output_path.is_symlink():
+        raise FileExistsError(f"出力先が既に存在します（上書きしません）: {output_path}")
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=output_path.parent,
+        prefix=f".{output_path.name}.", suffix=".tmp", delete=False,
+    )
+    temp_path = Path(handle.name)
+    try:
+        def save_text(text):
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.link(temp_path, output_path)
+        yield save_text
+    finally:
+        try:
+            handle.close()
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as error:
+                print(f"一時ファイルを削除できませんでした ({temp_path}): {error}")
+
+
 def batch_process_document_with_bounds(
     project_id: str,
     location: str,
@@ -100,6 +138,29 @@ def batch_process_document_with_bounds(
     y_max: float = 1.0,
     x_min: float = 0.0,
     x_max: float = 1.0,
+    output_path: Optional[Path] = None,
+) -> str:
+    """Preflight local output before cloud work; clean GCS only after saving."""
+    if not Path(file_path).is_file():
+        raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
+    with atomic_text_output(output_path) as save_output:
+        return _batch_process_document_with_bounds(
+            project_id, location, processor_id, file_path, mime_type,
+            y_min, y_max, x_min, x_max, save_output=save_output,
+        )
+
+
+def _batch_process_document_with_bounds(
+    project_id: str,
+    location: str,
+    processor_id: str,
+    file_path: str,
+    mime_type: str,
+    y_min: float = 0.0,
+    y_max: float = 1.0,
+    x_min: float = 0.0,
+    x_max: float = 1.0,
+    save_output=None,
 ) -> str:
     """
     PDFドキュメントを非同期で処理し、指定された境界内のテキストを抽出する。
@@ -211,6 +272,9 @@ def batch_process_document_with_bounds(
                 extracted_text.append(page_text.strip())
                 extracted_text.append("\n")
     
+        result = "\n".join(extracted_text)
+        if result.strip() and save_output is not None:
+            save_output(result)
         processing_succeeded = True
     finally:
         if processing_succeeded:
@@ -220,7 +284,7 @@ def batch_process_document_with_bounds(
             # or timed-out operation may still be writing to its own prefix.
             print(f"処理に失敗したため一時ファイルを保持します: gs://{bucket_name}/{run_prefix}")
 
-    return "\n".join(extracted_text)
+    return result
 
 
 def main():
@@ -237,6 +301,7 @@ def main():
 バケットは `{PROJECT_ID}-docai-batch-processing` という名前で自動的に作成されます。
 実行ごとに固有の runs/<ID>/ を使用し、成功時は当該実行で確認した世代だけ削除します。
 失敗時は診断・復旧用に入力と部分出力を保持し、保存先を表示します。
+出力先が既に存在する場合は処理前に終了します。保存成功後にGCSをクリーンアップします。
 """
     )
     parser.add_argument("project_id", help="Google Cloud プロジェクトID")
@@ -256,6 +321,7 @@ def main():
     if not (0.0 <= args.x_min < args.x_max <= 1.0):
         raise ValueError(f"不正なX座標の範囲です: x_min={args.x_min}, x_max={args.x_max}")
 
+    output_path = Path(args.file_path).with_suffix(".batch-layout-ocr.txt")
     try:
         text = batch_process_document_with_bounds(
             project_id=args.project_id,
@@ -267,21 +333,22 @@ def main():
             y_max=args.y_max,
             x_min=args.x_min,
             x_max=args.x_max,
+            output_path=output_path,
         )
         
         if text.strip():
             print("\n--- 抽出されたテキスト ---")
             print(text)
             
-            output_path = Path(args.file_path).with_suffix(".batch-layout-ocr.txt")
-            output_path.write_text(text, encoding="utf-8")
             print(f"\n結果はファイルにも保存されました: {output_path}")
         else:
             print("\n指定された範囲内にテキストが見つかりませんでした。")
 
-    except (FileNotFoundError, ValueError, Exception) as e:
+    except Exception as e:
         print(f"エラーが発生しました: {e}")
         print("Google Cloudの認証情報やプロジェクトID、ファイルパスが正しいか確認してください。")
+        return 1
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
