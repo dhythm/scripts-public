@@ -442,6 +442,20 @@ uv run python -m pdfocr book.pdf --force
 - **共通の後処理**: 連続する重複ページの除去、縦書き用の約物（﹁﹂︑︒ など）の変換、日本語の文字間に入った半角スペースの除去。
 - **安全な保存**: 一時ファイルに書いてから置き換えるため、途中で失敗しても既存の出力は壊れません。入力PDF自体やそのハードリンクには出力できません。テキストが全く抽出できなかった場合は保存せず、終了コード1で終了します。
 
+## 画像 → SVG 変換 (image_to_svg)
+
+画像を減色・ベクトル化してSVGにするツールです（vtracer を使用）。
+
+```sh
+# 出力ディレクトリと最終色数を指定（省略時は ./output、256色）
+uv run python -m image_to_svg input.png ./output 256
+
+# 拡大倍率と中間結果の保存
+uv run python -m image_to_svg input.png ./output 256 --scale 4 --intermediate
+```
+
+引数なしで実行すると、オプションの一覧を表示します。
+
 ## Google Text-to-Speech 変換 (google_tts.py)
 
 Google Cloud Text-to-Speech APIで日本語テキストを音声ファイルに変換するスクリプトです。
