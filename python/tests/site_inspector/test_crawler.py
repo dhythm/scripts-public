@@ -98,3 +98,37 @@ def test_duplicate_urls_are_only_fetched_once():
         ["https://example.com/a", "https://example.com/a#fragment"], concurrency=2, handler=handler
     )
     assert len(requests) == len(crawler._results) == 1
+
+
+def test_malformed_links_do_not_stop_valid_pages():
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        if request.url.path == "/":
+            return httpx.Response(
+                200,
+                text='<a href="https://example.com:bad/path">bad</a><a href="/good">good</a>',
+                headers={"Content-Type": "text/html"},
+            )
+        return httpx.Response(200, text="good", headers={"Content-Type": "text/plain"})
+
+    crawler = crawl(["https://example.com/"], concurrency=1, handler=handler)
+    assert requests == ["https://example.com/", "https://example.com/good"]
+    assert len(crawler._results) == 2
+    assert all(page.error is None for page in crawler._results)
+
+
+def test_malformed_seeds_are_skipped_before_queueing():
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, text="good", headers={"Content-Type": "text/plain"})
+
+    crawler = crawl(
+        ["https://example.com:bad/path", "https://[broken", "https://example.com/good"],
+        handler=handler,
+    )
+    assert requests == ["https://example.com/good"]
+    assert len(crawler._results) == 1

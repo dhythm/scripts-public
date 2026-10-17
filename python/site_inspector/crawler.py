@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
+from pydantic import HttpUrl, TypeAdapter, ValidationError
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -20,6 +21,7 @@ from .sitemap import fetch_sitemap_urls
 from .storage import export_csv, export_json, export_markdown, export_structure_json
 
 console = Console()
+HTTP_URL = TypeAdapter(HttpUrl)
 
 
 def normalize_url(url: str) -> str:
@@ -118,6 +120,8 @@ class Crawler:
         queue: asyncio.Queue[Tuple[str, int]] = asyncio.Queue()
         seeds = await self._initial_urls()
         for seed in seeds:
+            if not self._should_visit(seed, 0):
+                continue
             normalized = normalize_url(seed)
             self._parent_map.setdefault(normalized, None)
             await queue.put((seed, 0))
@@ -143,12 +147,13 @@ class Crawler:
                 limit=self.config.max_pages * 2,
             )
             for url in sitemap_urls:
-                seeds.add(normalize_url(url))
+                seeds.add(url)
         return seeds
 
     async def _worker(self, queue: asyncio.Queue[Tuple[str, int]], progress: Progress, task_id: int) -> None:
         while True:
             url, depth = await queue.get()
+            started = False
             try:
                 if self._pages_started >= self.config.max_pages:
                     continue
@@ -156,28 +161,36 @@ class Crawler:
                     continue
                 # Reserve a slot before yielding, so in-flight requests count too.
                 self._pages_started += 1
+                started = True
+                await self._process_url(url, depth, queue, progress, task_id)
+            except Exception as exc:
+                # A malformed candidate or failed error record must not kill a worker.
                 try:
-                    await self._process_url(url, depth, queue, progress, task_id)
-                except Exception as exc:
                     self._results.append(
                         PageData(
-                            url=normalize_url(url),
+                            url=url,
                             depth=depth,
-                            parent_url=self._parent_map.get(normalize_url(url)),
+                            parent_url=self._parent_map.get(url),
                             fetched_at=datetime.utcnow(),
                             error=f"{type(exc).__name__}: {exc}",
                         )
                     )
-                finally:
+                except ValidationError:
+                    console.log("Invalid page URL skipped")
+            finally:
+                if started:
                     self._pages_crawled += 1
                     progress.update(task_id, completed=self._pages_crawled)
-            finally:
                 queue.task_done()
 
     def _should_visit(self, url: str, depth: int) -> bool:
         if depth > self.config.max_depth:
             return False
-        normalized = normalize_url(url)
+        try:
+            HTTP_URL.validate_python(url)
+            normalized = normalize_url(url)
+        except (ValidationError, ValueError):
+            return False
         if normalized in self._visited:
             return False
         if not self._is_allowed_domain(normalized):
