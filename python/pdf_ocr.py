@@ -1,3 +1,4 @@
+import argparse
 import pytesseract
 from pytesseract import TesseractError, TesseractNotFoundError
 from pdf2image import convert_from_path
@@ -159,7 +160,7 @@ def perform_ocr(image, lang='jpn'):
         else:
             raise Exception(f"OCR処理中にエラーが発生しました: {str(e)}")
 
-def extract_text_with_ocr(pdf_path):
+def extract_text_with_ocr(pdf_path, *, overwrite=False):
     """PDFファイルからOCRを使用してテキストを抽出し、.txtファイルに保存する"""
     
     # 警告を抑制
@@ -179,6 +180,9 @@ def extract_text_with_ocr(pdf_path):
         
         # 出力ファイルのパスを生成（同じディレクトリに_ocr.txt拡張子で）
         output_path = input_path.with_suffix('.ocr.txt')
+        if output_path.exists() and not overwrite:
+            print(f'エラー: 出力ファイルが既に存在します: {output_path}（上書きは --force）')
+            return False
         
         print("PDFを画像に変換中...")
         images = pdf_to_images(pdf_path)
@@ -186,6 +190,7 @@ def extract_text_with_ocr(pdf_path):
         # 各ページに対してOCRを実行
         all_text = ""
         total_pages = len(images)
+        failed_pages = []
         
         for page_number, image in enumerate(images):
             print(f"ページ {page_number + 1}/{total_pages} を処理中...")
@@ -197,17 +202,22 @@ def extract_text_with_ocr(pdf_path):
                     all_text += text + "\n\n"
             except Exception as e:
                 print(f"ページ {page_number + 1} の処理中にエラーが発生しました: {str(e)}")
+                failed_pages.append(page_number + 1)
                 continue
+
+        if failed_pages:
+            print(f"エラー: OCRに失敗したページ: {failed_pages}。不完全な結果は保存しません。")
+            return False
         
+        if not all_text.strip():
+            print("エラー: テキストを抽出できませんでした。出力は保存しません。")
+            return False
+
         # テキストをファイルに保存
-        with open(output_path, mode='w', encoding='utf-8') as output_file:
+        with open(output_path, mode='w' if overwrite else 'x', encoding='utf-8') as output_file:
             output_file.write(all_text)
         
         print(f"\nOCR処理完了！結果は「{output_path}」に保存されました。")
-        
-        # 抽出されたテキストが空の場合の警告
-        if not all_text.strip():
-            print("警告: PDFからテキストが抽出されませんでした。画像の品質を確認してください。")
         
         return True
         
@@ -224,12 +234,11 @@ def check_tesseract():
         return False
 
 def main():
-    # コマンドライン引数をチェック
-    if len(sys.argv) != 2:
-        print("使用方法: python pdf_ocr.py <PDFファイルパス>")
-        print("例: python pdf_ocr.py document.pdf")
-        sys.exit(1)
-    
+    parser = argparse.ArgumentParser(description='pdf_ocr')
+    parser.add_argument('pdf_path')
+    parser.add_argument('--force', action='store_true', help='既存の出力ファイルを上書きする')
+    args = parser.parse_args()
+
     # Tesseractのインストールをチェック
     if not check_tesseract():
         print("エラー: Tesseractがインストールされていません。")
@@ -239,8 +248,8 @@ def main():
         print("  Windows: https://github.com/UB-Mannheim/tesseract/wiki からダウンロード")
         sys.exit(1)
     
-    pdf_path = sys.argv[1]
-    extract_text_with_ocr(pdf_path)
+    success = extract_text_with_ocr(args.pdf_path, overwrite=args.force)
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()

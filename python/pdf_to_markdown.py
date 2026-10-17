@@ -22,12 +22,11 @@
 
 import sys
 import re
-import os
 import time
 import argparse
 import hashlib
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 # .envファイルから環境変数を読み込む
 try:
@@ -576,7 +575,8 @@ def convert_pdf_to_markdown(
     output_path: Optional[str] = None,
     use_llm: bool = False,
     batch_size: int = 1,
-    max_reduction_ratio: float = 0.05
+    max_reduction_ratio: float = 0.05,
+    overwrite: bool = False,
 ) -> bool:
     """
     PDFファイルをMarkdownファイルに変換する
@@ -602,6 +602,13 @@ def convert_pdf_to_markdown(
         output_path = pdf_file.parent / f"{pdf_file.stem}.md"
     else:
         output_path = Path(output_path)
+
+    if output_path.resolve() == pdf_file.resolve():
+        print("✗ エラー: 入力PDFを出力先には指定できません")
+        return False
+    if output_path.exists() and not overwrite:
+        print(f"✗ エラー: 出力先が既に存在します: {output_path}（上書きは --force）")
+        return False
 
     mode_str = "LLM校正あり" if use_llm else "標準モード"
     print(f"\n{'='*60}")
@@ -645,16 +652,16 @@ def convert_pdf_to_markdown(
 
     # ファイルに保存
     try:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w' if overwrite else 'x', encoding='utf-8') as f:
             f.write(markdown_text)
-        print(f"✓ Markdown整形完了\n")
+        print("✓ Markdown整形完了\n")
     except Exception as e:
         print(f"\n✗ エラー: ファイルの保存に失敗しました: {e}")
         return False
 
     # 完了メッセージ
     print(f"{'='*60}")
-    print(f"✓ 変換完了!")
+    print("✓ 変換完了!")
     print(f"{'='*60}")
     print(f"出力ファイル: {output_path}")
     print(f"ファイルサイズ: {output_path.stat().st_size:,} bytes")
@@ -700,6 +707,7 @@ def main():
         help='許容する最大削減率（デフォルト: 0.05 = 5%%）'
     )
 
+    parser.add_argument('--force', action='store_true', help='既存の出力ファイルを上書きする')
     args = parser.parse_args()
 
     # 変換実行
@@ -708,7 +716,8 @@ def main():
         args.output,
         use_llm=args.llm,
         batch_size=args.batch_size,
-        max_reduction_ratio=args.max_reduction
+        max_reduction_ratio=args.max_reduction,
+        overwrite=args.force,
     )
 
     sys.exit(0 if success else 1)

@@ -1,6 +1,6 @@
+import argparse
 import pdfplumber
 import sys
-import os
 from pathlib import Path
 import warnings
 import logging
@@ -9,7 +9,7 @@ import io
 import hashlib
 import re
 
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_pdf(pdf_path, *, overwrite=False):
     """PDFファイルからテキストを抽出して同じディレクトリに.txtファイルを保存する"""
     
     # pdfplumberの警告を抑制
@@ -29,6 +29,9 @@ def extract_text_from_pdf(pdf_path):
         
         # 出力ファイルのパスを生成（同じディレクトリに.txt拡張子で）
         output_path = input_path.with_suffix('.txt')
+        if output_path.exists() and not overwrite:
+            print(f'エラー: 出力ファイルが既に存在します: {output_path}（上書きは --force）')
+            return False
         
         # PDFからテキストを抽出（警告を抑制）
         all_text = ""
@@ -50,17 +53,17 @@ def extract_text_from_pdf(pdf_path):
                         all_text += f"--- Page {page_number + 1} ---\n"
                         all_text += text + "\n\n"
         
+        if not all_text.strip():
+            print("エラー: テキストを抽出できませんでした。出力は保存しません。")
+            return False
+
         # テキストをファイルに保存
-        with open(output_path, mode='w', encoding='utf-8') as output_file:
+        with open(output_path, mode='w' if overwrite else 'x', encoding='utf-8') as output_file:
             output_file.write(all_text)
         
         print(f"テキスト抽出完了！結果は「{output_path}」に保存されました。")
         if skipped_pages:
             print(f"重複ページを {skipped_pages} ページスキップしました。")
-        
-        # 抽出されたテキストが空の場合の警告
-        if not all_text.strip():
-            print("警告: PDFからテキストが抽出されませんでした。画像ベースのPDFの可能性があります。")
         
         return True
         
@@ -69,14 +72,13 @@ def extract_text_from_pdf(pdf_path):
         return False
 
 def main():
-    # コマンドライン引数をチェック
-    if len(sys.argv) != 2:
-        print("使用方法: python pdf_to_text.py <PDFファイルパス>")
-        print("例: python pdf_to_text.py document.pdf")
-        sys.exit(1)
-    
-    pdf_path = sys.argv[1]
-    extract_text_from_pdf(pdf_path)
+    parser = argparse.ArgumentParser(description='pdf_to_text')
+    parser.add_argument('pdf_path')
+    parser.add_argument('--force', action='store_true', help='既存の出力ファイルを上書きする')
+    args = parser.parse_args()
+
+    success = extract_text_from_pdf(args.pdf_path, overwrite=args.force)
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()
