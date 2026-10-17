@@ -652,14 +652,14 @@ def convert_pdf_to_markdown(
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(markdown_text)
-        print("✓ Markdown整形完了\n")
+        print(f"✓ Markdown整形完了\n")
     except Exception as e:
         print(f"\n✗ エラー: ファイルの保存に失敗しました: {e}")
         return False
 
     # 完了メッセージ
     print(f"{'='*60}")
-    print("✓ 変換完了!")
+    print(f"✓ 変換完了!")
     print(f"{'='*60}")
     print(f"出力ファイル: {output_path}")
     print(f"ファイルサイズ: {output_path.stat().st_size:,} bytes")
