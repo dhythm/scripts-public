@@ -131,40 +131,9 @@ uv run python google_pdf_pipeline.py "サステナビリティ レポート PDF"
 
 ## 音声文字起こしツール
 
-音声ファイルからテキストを抽出する2つのツールを提供しています。
+音声・動画ファイルをローカルで文字起こしするツールです。
 
-**注意**: 現在、Python 3.10以降では`openai-whisper`の依存関係の問題により、`transcribe_faster_whisper.py`のみが使用可能です。`transcribe_whisper.py`を使用する場合は、`WHISPER_SETUP.md`を参照してください。
-
-### 1. OpenAI Whisper版 (transcribe_whisper.py)
-
-OpenAI公式のWhisperライブラリを使用した音声文字起こしツールです。（Python 3.9が必要）
-
-#### 使用方法
-
-```sh
-# 基本的な使用方法
-uv run python transcribe_whisper.py input.mp3
-
-# モデルと言語を指定
-uv run python transcribe_whisper.py input.mp3 --model medium --language ja
-
-# JSON形式でタイムスタンプ付きで出力
-uv run python transcribe_whisper.py input.wav --output result.json --format json --timestamps
-
-# SRT字幕形式で出力
-uv run python transcribe_whisper.py input.mp4 --output subtitles.srt --format srt
-```
-
-#### 特徴
-
-- 複数のモデルサイズ（tiny, base, small, medium, large）をサポート
-- 日本語を含む多言語対応
-- 自動言語検出機能
-- テキスト、JSON、SRT形式での出力
-- タイムスタンプ付き出力オプション
-- 音声ファイルの自動変換（mp3, wav, m4a, flac等に対応）
-
-### 2. Qwen3-ASR / Faster-Whisper版 (transcribe_faster_whisper.py)
+### Qwen3-ASR / Faster-Whisper版 (transcribe_faster_whisper.py)
 
 2つのエンジンを切り替えて使える音声文字起こしツールです（ファイル名は後方互換のため据え置き）。
 
@@ -309,174 +278,6 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 | `--word_timestamps` | 単語レベルのタイムスタンプ |
 | `--confidence` | 信頼度情報を含める |
 
-### 3. Google Cloud Speech-to-Text v2 Chirp 3版 (transcribe_google_chirp.py)
-
-Google Cloud Speech-to-Text v2 の最新モデル **Chirp 3** を利用した日本語向け文字起こしツールです。Google Cloud の認証情報と課金設定が必要です。
-
-#### 事前準備
-
-- `GOOGLE_APPLICATION_CREDENTIALS` でサービスアカウント JSON を指定
-- `GOOGLE_CLOUD_PROJECT` もしくは `--project` でプロジェクト ID を指定
-- Chirp 3 が利用可能なリージョン (例: `us`, `eu`, `asia-northeast1`, `asia-southeast1`) を選択（デフォルトは `asia-northeast1`＝東京）citeturn1search2
-- Batch Recognize では Google Cloud Storage の `gs://` URI が必須（ローカル音声は自動アップロードに対応）citeturn1search0
-- Cloud Storage バケットの作成・読み取りに `roles/storage.admin`（または同等のバケット操作権限）を付与
-- Speech-to-Text API v2 を有効化し、サービスアカウントに `roles/speech.transcriber` 以上の権限を付与
-- `uv sync` を実行して依存関係 (`google-cloud-speech`, `google-cloud-storage`) をインストール
-- サービスアカウントや ADC に `project_id` が含まれていれば `--project` を省略できます（自動検出）
-- `--upload-bucket` を省略すると、プロジェクトとリージョンに基づく専用バケットを自動作成し再利用します（初回は作成ログを表示）
-- サービスアカウント JSON のパスは `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/service-account.json` のように環境変数で指定します（絶対パス推奨）
-- 出力先を指定しない場合でも、各音声ファイルと同じディレクトリに同名の `.txt`（`--format json` のときは `.json`）を自動保存します
-
-#### 基本的な使用方法
-
-```sh
-# 1分未満の音声を同期認識で処理
-uv run python transcribe_google_chirp.py audio.m4a \
-  --project my-project --location asia-northeast1 --output transcript.txt
-
-# 5分程度までの音声をストリーミング認識で処理し、途中結果を表示
-uv run python transcribe_google_chirp.py meeting.mp3 \
-  --mode streaming --interim-results --language-codes ja-JP \
-  --project my-project --location us --format json --output transcript.json
-
-# 1時間規模の音声を Batch Recognize で処理（バケット未指定なら自動作成）
-uv run python transcribe_google_chirp.py long_form.wav \
-  --mode batch \
-  --project my-project --location us --format json --output long_form.json
-
-# 既存バケットを使い分けたい場合の例
-uv run python transcribe_google_chirp.py long_form.wav \
-  --mode batch --upload-bucket my-bucket --upload-prefix transcripts \
-  --project my-project --location us --format json --output long_form.json
-
-# 専門用語を強調するフレーズアダプテーションの例
-uv run python transcribe_google_chirp.py lecture.wav \
-  --phrase "ソフトバンク" --phrase "生成AI" --phrase-boost 18 \
-  --project my-project --location us
-```
-
-#### 主なオプション
-
-- `--mode`: `auto` は10MB以下を同期、それ以上は自動で Batch Recognize に切り替え（1時間までの長尺処理に対応）citeturn1search1turn1search2
-- `--language-codes`: 言語コードを明示指定。`--auto-language` で自動検出
-- `--enable-word-time-offsets`: 単語レベルのタイムスタンプを取得（同期・ストリーミング・バッチで使用可能）
-- `--denoise-audio` / `--snr-threshold`: 内蔵デノイザーと SNR フィルタを有効化し雑音を抑制
-- `--phrase`: Speech Adaptation で固有名詞などを強調し、認識精度を向上
-
-> **注意**: 同期認識は約1分まで、ストリーミングは約5分までが推奨です。1分を超える音声（最大約1時間）は Batch Recognize を利用してください。citeturn1search1turn1search2
-> **権限エラーが発生した場合**: エラーメッセージに `speech.recognizers.recognize` が含まれるときは、Speech-to-Text API v2 を有効化し、サービスアカウントに `roles/speech.transcriber` 以上を付与してください。
-
-#### Batch 結果の保存と --batch-output-save-text
-
-- `--batch-output-gcs-uri` を指定すると、Batch Recognize の結果ファイル（JSON）が Cloud Storage 上に出力されます。
-- `--batch-output-save-text` を併用すると、API から取得したテキストのみを `.txt` として同じプレフィックスに保存します。JSON とテキストを分けて管理したい場合に便利です。
-- `--batch-output-gcs-uri` を省略した場合は、アップロード先バケットの `/results/` 以下に自動的にプレフィックスが割り当てられます。自動プレフィックスでも `--batch-output-save-text` は有効です。
-- `--batch-output-save-text` は Batch モード以外では無視され、Cloud Storage 以外（ローカルファイルのみ）では保存先がないため警告が表示されます。
-
-```sh
-# Batch で JSON とテキストを Cloud Storage に保存する例
-uv run python transcribe_google_chirp.py lecture.wav \
-  --mode batch \
-  --project my-project \
-  --location asia-northeast1 \
-  --format json \
-  --batch-output-gcs-uri gs://my-bucket/chirp/jobs/lecture \
-  --batch-output-save-text
-```
-
-#### 🎧 Tips: 音声ファイルの前処理と変換
-
-##### 1. 非対応フォーマットの注意点
-`audio/mp4a-latm`（LATM パケット化 AAC）は **Speech-to-Text v2 / Chirp 3 では非対応** です。  
-
-この形式をアップロードするとエラーコード `3 (INVALID_ARGUMENT)` が発生します。  
-**事前に WAV 形式へ変換**してから文字起こしを行ってください。
-
-```bash
-ffmpeg -i input.m4a \
-       -acodec pcm_s16le -ac 1 -ar 16000 \
-       input_converted.wav
-```
-
-- `-acodec pcm_s16le`: 16-bit PCM へ変換  
-- `-ac 1`: モノラル化（1チャンネル）  
-- `-ar 16000`: サンプリングレートを 16 kHz に変換（STT 推奨設定）
-
----
-
-##### 2. 長時間音声の分割
-`Recognize` API は **1 ファイルあたり最長 60 分** までしか処理できません。  
-60 分を超える音声は、以下のように `ffmpeg` で分割してください。
-
-```bash
-ffmpeg -i input_converted.wav \
-       -f segment -segment_time 1800 -c copy \
-       input_part_%02d.wav
-```
-
-上記例では 30 分（1800 秒）ごとにファイルを分割します。
-
----
-
-##### 3. 前処理オプションの利用
-`python/transcribe_google_chirp.py` にはローカル音声向けの前処理機能を追加しています。  
-CLI フラグでノーマライズ・ゲイン調整・ノイズ除去などを制御可能です。
-
-###### 依存パッケージの追加
-```bash
-uv add pydub noisereduce
-```
-
-###### 例: ノイズ除去＋音量調整を有効化
-```bash
-uv run python transcribe_google_chirp.py sample.m4a \
-  --preprocess-denoise \
-  --preprocess-normalize \
-  --preprocess-gain-db 4 \
-  --preprocess-noise-reduce-amount 0.6 \
-  --mode batch
-```
-
-- ノイズ除去は **先頭約0.5秒** をノイズサンプルとして解析します。  
-- ノーマライズはデフォルトで **-3 dBFS** を目標にしています（`--preprocess-target-dbfs` で変更可）。  
-- 処理後は一時 WAV を生成し、Batch/Sync/Streaming すべてで前処理済み音声を参照します。
-
----
-
-##### 4. 音量が小さい場合のおすすめ設定
-登壇者の声が全体的に小さい場合は、以下の設定を試してください。
-
-```bash
---preprocess-normalize --preprocess-target-dbfs -3
-```
-
-- ピークを -3 dBFS に揃え、破綻を避けつつ音量を底上げします。  
-- まだ小さい場合は `--preprocess-gain-db 3〜6` を追加し、段階的に調整してください。  
-- ノイズが気になる場合は以下を組み合わせます：
-
-```bash
---preprocess-denoise --preprocess-noise-reduce-amount 0.6
-```
-
-- 一定の環境ノイズ（例: 空調音）がある場合は `--preprocess-stationary-noise` を追加すると安定します。  
-- ノイズ除去強度は **0.6〜0.8 程度** が目安です。
-
----
-
-##### 5. 次のステップ
-1. 上記設定でサンプル音声を処理し、音量とノイズ低減の効果を確認します。  
-2. 問題なければ本番音声に適用し、`--preprocess-noise-reduce-amount` や `--preprocess-gain-db` を微調整してください。
-
-##### モデル・処理オプション
-
-| オプション | 説明 | デフォルト |
-|-----------|------|-----------|
-| `--model` | モデルサイズ（tiny/base/small/medium/large-v3） | base |
-| `--language` | 言語コード（ja/en等） | 自動検出 |
-| `--device` | デバイス（cuda/cpu/auto） | auto |
-| `--beam_size` | ビームサーチの幅 | 5 |
-| `--initial_prompt` | 初期プロンプト（文脈を与える） | - |
-
 #### パラメータ調整のコツ
 
 1. **ノーマライズはデフォルトで有効**
@@ -595,25 +396,14 @@ uv run python transcribe_google_chirp.py sample.m4a \
 
 #### 特徴
 
-- OpenAI Whisperより高速な処理
-- GPU/CPU自動選択
+- Qwen3-ASR（Apple SiliconのGPU）による高速・句読点付きの文字起こし（デフォルト）
+- faster-whisper（`--engine whisper`）への切り替え
 - メモリ効率的な処理
 - 単語レベルのタイムスタンプ生成
 - Voice Activity Detection (VAD) フィルター（小さい音声に最適化済み）
 - 音声前処理機能（ノーマライズ、ゲイン調整、ノイズ除去）
 - テキスト、JSON、SRT、WebVTT形式での出力
 - 信頼度情報の出力オプション
-
-### 共通オプション
-
-両ツール共通の主要オプション：
-
-- `--model`: 使用するモデルサイズ
-- `--language`: 音声の言語コード（ja, en等）
-- `--output`: 出力ファイルパス
-- `--format`: 出力形式（text, json, srt等）
-- `--timestamps`: タイムスタンプを含める
-- `--task`: transcribe（文字起こし）またはtranslate（英語翻訳）
 
 ### インストール
 

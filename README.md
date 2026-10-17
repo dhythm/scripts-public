@@ -12,7 +12,7 @@
 |---|---|---|
 | ルート | 主にPDFのローカル抽出・SVG用の小さいPython環境 | `uv sync` |
 | `python/` | OCR・サイト調査・画像・音声などのPython CLI | `cd python` → `uv sync` |
-| `javascript/node-ts/` | 情報源調査、TTS、Chirp等のNode CLI | 同ディレクトリで `npm ci` |
+| `javascript/node-ts/` | 情報源調査、TTSのNode CLI | 同ディレクトリで `npm ci` |
 | `javascript/deno-ts/` | PDF抽出、会議候補、PRTIMES等のDeno CLI | 同ディレクトリのREADME・`deno.json`参照 |
 
 各Python環境は別の `pyproject.toml` と `uv.lock` を使います。`site-inspector` のentry pointは `python/` 側にのみあります。
