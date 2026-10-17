@@ -112,6 +112,21 @@ npm run source-origin -- \
 標準出力では分類・理由・要約・主要主体を日本語で表示し、三次情報だった場合のみ逆引きした補完ソース一覧を追記します。`--json` を付ければAPIレスポンスをそのままログ保管や後続処理へ回せます。
 
 
+## 情報収集CLIの入出力と取得制限
+
+`primary-harvest` の出力先省略時と `source-origin --json` の標準出力は結果JSONだけです。進捗・診断ログは標準エラーに出します。ただし `npm run` は実行前に `> node-ts-project@1.0.0 ...` という行を標準出力へ出すため、JSONとしてパイプ処理する場合は `-s`（`--silent`）を付けてください。
+
+```bash
+npm run -s primary-harvest -- --keyword "生成AI ガバナンス" | jq '.'
+npm run -s source-origin -- --url "https://example.com/case-study" --json | jq '.'
+```
+
+`source-origin` の既定の整形結果も標準出力に出し、ファイルへリダイレクトできます。`--output` の親ディレクトリはAPI呼出し前に作成・書込み可否を確認します。既存の通常ファイルへの結果保存は上書きします。
+
+`primary-harvest` はキーワードの一部または全件が失敗した場合、取得済みの結果とエラーをJSONに残し、終了コード1を返します。
+
+URL本文およびBing PDF検索ページのHTTP取得は、正常ステータスとHTML/XHTML/プレーンテキストのContent-Typeを検査し、リクエストから本文取得まで30秒、本文5MiBまでに制限します。PDF等のバイナリやエラーページを記事本文としてモデルへ送信しません。ブラウザ操作を要するページやContent-Type未設定のページは取得失敗になります。
+
 ## Text-to-Speech (`text-to-speech/`)
 
 OpenAI Text-to-Speech API を使用して日本語テキストを音声ファイルに変換するツールです。
