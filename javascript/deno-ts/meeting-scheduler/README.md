@@ -165,8 +165,7 @@ deno task meeting \
 | `GOOGLE_CLIENT_SECRET` | Google OAuth2 クライアントシークレット | 必須（Google使用時） |
 | `GOOGLE_REFRESH_TOKEN` | Google OAuth2 リフレッシュトークン | 必須（Google使用時） |
 | `HUBSPOT_API_KEY` | HubSpot APIキー | 必須（HubSpot使用時） |
-| `OPENAI_API_KEY` | OpenAI APIキー | 必須（--openai使用時） |
-| `OPENAI_MODEL` | 使用するOpenAIモデル | gpt-4o-mini |
+| `OPENAI_API_KEY` | OpenAI APIキー（AIによる最適化には `gpt-6-luna` を使用） | 必須（--openai使用時） |
 | `DEFAULT_TIMEZONE` | デフォルトのタイムゾーン | Asia/Tokyo |
 | `DEFAULT_DURATION` | デフォルトの会議時間（分） | 60 |
 

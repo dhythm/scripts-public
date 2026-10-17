@@ -1,6 +1,15 @@
 import { CalendarEvent, TimeSlot, Person } from "../types/index.ts";
 import { HubSpotAuth } from "../utils/auth-hubspot.ts";
 
+
+/** HubSpot Scheduler API の allUsersBusyTimes[].meetingsUser（デバッグ表示に使う部分のみ） */
+interface HubSpotMeetingsUser {
+  userProfile?: {
+    fullName?: string;
+    email?: string;
+  };
+}
+
 export class HubSpotClient {
   private auth: HubSpotAuth;
   private baseUrl = "https://api.hubapi.com";
@@ -157,6 +166,8 @@ export class HubSpotClient {
     // 各月のデータを取得
     const allAvailabilities: any[] = [];
     const allBusyTimes: any[] = [];
+    // デバッグ表示用。月ごとの応答をまとめるときにユーザー情報を失わないよう保持する
+    let meetingsUser: HubSpotMeetingsUser | undefined;
     
     for (const monthOffset of monthOffsets) {
       const url = `${this.baseUrl}/scheduler/v3/meetings/meeting-links/book/availability-page/${meetingLink}?timezone=${timezone}&monthOffset=${monthOffset}`;
@@ -182,6 +193,7 @@ export class HubSpotClient {
       // busyTimesも収集
       if (data.allUsersBusyTimes) {
         for (const userBusy of data.allUsersBusyTimes) {
+          meetingsUser ??= userBusy.meetingsUser;
           if (userBusy.busyTimes) {
             allBusyTimes.push(...userBusy.busyTimes);
           }
@@ -199,6 +211,7 @@ export class HubSpotClient {
         }
       },
       allUsersBusyTimes: allBusyTimes.length > 0 ? [{
+        meetingsUser,
         busyTimes: allBusyTimes
       }] : []
     };

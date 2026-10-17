@@ -1,4 +1,4 @@
-import OpenAI from "npm:openai@4.28.0";
+import OpenAI from "npm:openai@6.9.1";
 import {
   AvailabilityResult,
   MeetingCandidate,
@@ -11,11 +11,18 @@ import {
   formatDateTime,
 } from "../utils/date-utils.ts";
 
-export class AvailabilityAnalyzer {
-  private openai?: OpenAI;
+export const OPENAI_MODEL = "gpt-6-luna";
 
-  constructor(openaiConfig?: OpenAIConfig) {
-    if (openaiConfig?.apiKey) {
+/** テストで差し替えられるよう、使うAPIだけを型にしたもの */
+export type ChatCompletionClient = Pick<OpenAI, "chat">;
+
+export class AvailabilityAnalyzer {
+  private openai?: ChatCompletionClient;
+
+  constructor(openaiConfig?: OpenAIConfig, client?: ChatCompletionClient) {
+    if (client) {
+      this.openai = client;
+    } else if (openaiConfig?.apiKey) {
       this.openai = new OpenAI({ apiKey: openaiConfig.apiKey });
     }
   }
@@ -58,7 +65,7 @@ export class AvailabilityAnalyzer {
 
     try {
       const response = await this.openai.chat.completions.create({
-        model: "gpt-5-mini",
+        model: OPENAI_MODEL,
         messages: [
           {
             role: "system",
@@ -70,12 +77,12 @@ export class AvailabilityAnalyzer {
             content: prompt,
           },
         ],
-        temperature: 0.3,
         response_format: { type: "json_object" },
       });
 
       const content = response.choices[0]?.message?.content;
       if (!content) {
+        console.warn("⚠️ AIの応答が空だったため、簡易スコアリングで候補を選びます。");
         return this.simpleScoring(availableSlots);
       }
 
@@ -83,6 +90,7 @@ export class AvailabilityAnalyzer {
       return this.parseOpenAIResponse(result, availableSlots);
     } catch (error) {
       console.error("OpenAI API エラー:", error);
+      console.warn("⚠️ AIによる最適化に失敗したため、簡易スコアリングで候補を選びます。");
       return this.simpleScoring(availableSlots);
     }
   }

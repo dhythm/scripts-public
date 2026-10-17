@@ -6,10 +6,12 @@
     "jsr:@std/cli@*": "1.0.23",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/testing@*": "1.0.16",
+    "jsr:@std/testing@^1.0.16": "1.0.16",
     "npm:@google-cloud/documentai@8.7.0": "8.7.0",
     "npm:buffer@6.0.3": "6.0.3",
     "npm:cheerio@1.0.0": "1.0.0",
     "npm:openai@4.28.0": "4.28.0",
+    "npm:openai@6.9.1": "6.9.1",
     "npm:pdf-parse@1.1.1": "1.1.1",
     "npm:pdf-ts@0.0.2": "0.0.2",
     "npm:playwright@*": "1.56.1"
@@ -108,33 +110,21 @@
     "@types/node-fetch@2.6.12": {
       "integrity": "sha512-8nneRWKCg3rMtF69nLQJnOYUcbafYeFSjqkw3jCRLsqkWFlHaoQrr5mXmofFGOx3DKn7UfmBMyov8ySvLRVldA==",
       "dependencies": [
-        "@types/node@22.15.15",
+        "@types/node",
         "form-data@4.0.4"
       ]
     },
     "@types/node@18.19.121": {
       "integrity": "sha512-bHOrbyztmyYIi4f1R0s17QsPs1uyyYnGcXeZoGEd227oZjry0q6XQBQxd82X1I57zEfwO8h9Xo+Kl5gX1d9MwQ==",
       "dependencies": [
-        "undici-types@5.26.5"
-      ]
-    },
-    "@types/node@22.15.15": {
-      "integrity": "sha512-R5muMcZob3/Jjchn5LcO8jdKwSCbzqmPB6ruBxMcf9kbxtniZHP327s6C37iOfuw8mbKK3cAQa7sEl7afLrQ8A==",
-      "dependencies": [
-        "undici-types@6.21.0"
-      ]
-    },
-    "@types/node@24.1.0": {
-      "integrity": "sha512-ut5FthK5moxFKH2T1CUOC6ctR67rQRvvHdFLCD2Ql6KXmMuCrjsSsRI9UsLCm9M18BMwClv4pn327UvB7eeO1w==",
-      "dependencies": [
-        "undici-types@7.8.0"
+        "undici-types"
       ]
     },
     "@types/request@2.48.13": {
       "integrity": "sha512-FGJ6udDNUCjd19pp0Q3iTiDkwhYup7J8hpMW9c4k53NrccQFFWKRho6hvtPPEhnXWKvukfwAlB6DbDz4yhH5Gg==",
       "dependencies": [
         "@types/caseless",
-        "@types/node@22.15.15",
+        "@types/node",
         "@types/tough-cookie",
         "form-data@2.5.5"
       ]
@@ -783,7 +773,7 @@
       "dependencies": [
         "cipher-base",
         "inherits@2.0.4",
-        "ripemd160@2.0.2",
+        "ripemd160",
         "sha.js"
       ]
     },
@@ -793,7 +783,7 @@
         "cipher-base",
         "inherits@2.0.4",
         "md5.js",
-        "ripemd160@2.0.2",
+        "ripemd160",
         "sha.js"
       ]
     },
@@ -803,7 +793,7 @@
         "cipher-base",
         "create-hash@1.2.0",
         "inherits@2.0.4",
-        "ripemd160@2.0.2",
+        "ripemd160",
         "safe-buffer@5.2.1",
         "sha.js"
       ]
@@ -1930,7 +1920,7 @@
         "readable-stream@2.3.8",
         "stream-browserify",
         "stream-http",
-        "string_decoder@1.3.0",
+        "string_decoder",
         "timers-browserify",
         "tty-browserify",
         "url",
@@ -2002,7 +1992,7 @@
     "openai@4.28.0": {
       "integrity": "sha512-JM8fhcpmpGN0vrUwGquYIzdcEQHtFuom6sRCbbCM6CfzZXNuRk33G7KfeRAIfnaCxSpzrP5iHtwJzIm6biUZ2Q==",
       "dependencies": [
-        "@types/node@18.19.121",
+        "@types/node",
         "@types/node-fetch",
         "abort-controller",
         "agentkeepalive",
@@ -2012,6 +2002,10 @@
         "node-fetch",
         "web-streams-polyfill@3.3.3"
       ],
+      "bin": true
+    },
+    "openai@6.9.1": {
+      "integrity": "sha512-vQ5Rlt0ZgB3/BNmTa7bIijYFhz3YBceAA3Z4JuoMSBftBF9YqFHIEhZakSs+O/Ad7EaoEimZvHxD5ylRjN11Lg==",
       "bin": true
     },
     "os-browserify@0.3.0": {
@@ -2080,7 +2074,8 @@
       "integrity": "sha512-BapA40NHICOS+USX9SN4tyhq+A2RrN/Ws5F0Z5aMHDp98Fl86lX8Oti8B7uN93L4Ifv4fHOEA+pQw87gmMO/lQ=="
     },
     "path-dirname@1.0.2": {
-      "integrity": "sha512-ALzNPpyNq9AqXMBjeymIjFDAkAFH06mHJH/cSBHAgU0s4vfpBn6b2nf8tiRLvagKD8RbTpq2FKTBg7cl9l3c7Q=="
+      "integrity": "sha512-ALzNPpyNq9AqXMBjeymIjFDAkAFH06mHJH/cSBHAgU0s4vfpBn6b2nf8tiRLvagKD8RbTpq2FKTBg7cl9l3c7Q==",
+      "deprecated": true
     },
     "path-exists@3.0.0": {
       "integrity": "sha512-bpC7GYwiDYQ4wYLe+FA8lhRjhQCMcQGuSgGGqDkg/QerRWw9CmGRT0iSOVRSZJ29NMLZgIzqaljJ63oaL4NIJQ=="
@@ -2093,7 +2088,7 @@
       "dependencies": [
         "create-hash@1.1.3",
         "create-hmac",
-        "ripemd160@2.0.1",
+        "ripemd160",
         "safe-buffer@5.2.1",
         "sha.js",
         "to-buffer"
@@ -2179,7 +2174,7 @@
         "@protobufjs/path",
         "@protobufjs/pool",
         "@protobufjs/utf8",
-        "@types/node@24.1.0",
+        "@types/node",
         "long"
       ],
       "scripts": true
@@ -2256,7 +2251,7 @@
         "isarray@1.0.0",
         "process-nextick-args",
         "safe-buffer@5.1.2",
-        "string_decoder@1.1.1",
+        "string_decoder",
         "util-deprecate"
       ]
     },
@@ -2264,7 +2259,7 @@
       "integrity": "sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA==",
       "dependencies": [
         "inherits@2.0.4",
-        "string_decoder@1.3.0",
+        "string_decoder",
         "util-deprecate"
       ]
     },
@@ -2328,13 +2323,6 @@
       "integrity": "sha512-J7f4wutN8mdbV08MJnXibYpCOPHR+yzy+iQ/AsjMv2j8cLavQ8VGagDFUwwTAdF8FmRKVeNpbTTEwNHCW1g94w==",
       "dependencies": [
         "hash-base@2.0.2",
-        "inherits@2.0.4"
-      ]
-    },
-    "ripemd160@2.0.2": {
-      "integrity": "sha512-ii4iagi25WusVoiC4B4lq7pbXfAp3D9v5CwfkY33vffw2+pkDjY1D8GaN7spsxvCSx8dkPqOZCEZyfxcmJG2IA==",
-      "dependencies": [
-        "hash-base@3.0.5",
         "inherits@2.0.4"
       ]
     },
@@ -2576,12 +2564,6 @@
         "safe-buffer@5.1.2"
       ]
     },
-    "string_decoder@1.3.0": {
-      "integrity": "sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA==",
-      "dependencies": [
-        "safe-buffer@5.2.1"
-      ]
-    },
     "strip-ansi@6.0.1": {
       "integrity": "sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A==",
       "dependencies": [
@@ -2700,12 +2682,6 @@
     "undici-types@5.26.5": {
       "integrity": "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA=="
     },
-    "undici-types@6.21.0": {
-      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="
-    },
-    "undici-types@7.8.0": {
-      "integrity": "sha512-9UJ2xGDvQ43tYyVMpuHlsgApydB8ZKfVYTsLDhXkFL/6gfkp+U8xTGdh8pMJv1SpZna0zxG1DwsKZsreLbXBxw=="
-    },
     "undici@6.22.0": {
       "integrity": "sha512-hU/10obOIu62MGYjdskASR3CUAiYaFTtC9Pa6vHyf//mAipSvSQg6od2CnJswq7fvzNS3zJhxoRkgNVaHurWKw=="
     },
@@ -2777,6 +2753,7 @@
     },
     "uuid@9.0.1": {
       "integrity": "sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==",
+      "deprecated": true,
       "bin": true
     },
     "vm-browserify@1.1.2": {
@@ -2848,7 +2825,8 @@
       "integrity": "sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==",
       "dependencies": [
         "iconv-lite"
-      ]
+      ],
+      "deprecated": true
     },
     "whatwg-mimetype@4.0.0": {
       "integrity": "sha512-QaKxh0eNIi2mE9p2vEdzfagOKHCcj1pJ56EEHGQOVxp8r9/iszLUUV7v89x9O1p/T+NlTM5W7jW6+cz4Fq1YVg=="
@@ -2935,6 +2913,7 @@
     "https://deno.land/std@0.220.0/assert/assert.ts": "bec068b2fccdd434c138a555b19a2c2393b71dfaada02b7d568a01541e67cdc5",
     "https://deno.land/std@0.220.0/assert/assert_exists.ts": "24a7bf965e634f909242cd09fbaf38bde6b791128ece08e33ab08586a7cc55c9",
     "https://deno.land/std@0.220.0/assert/assertion_error.ts": "9f689a101ee586c4ce92f52fa7ddd362e86434ffdf1f848e45987dc7689976b8",
+    "https://deno.land/std@0.220.0/async/delay.ts": "8e1d18fe8b28ff95885e2bc54eccec1713f57f756053576d8228e6ca110793ad",
     "https://deno.land/std@0.220.0/dotenv/mod.ts": "0180eaeedaaf88647318811cdaa418cc64dc51fb08354f91f5f480d0a1309f7d",
     "https://deno.land/std@0.220.0/dotenv/parse.ts": "09977ff88dfd1f24f9973a338f0f91bbdb9307eb5ff6085446e7c423e4c7ba0c",
     "https://deno.land/std@0.220.0/dotenv/stringify.ts": "0047ad7068289735d08964046aea267a750c141b494ca0e38831b89be6c020c2",
@@ -2946,6 +2925,7 @@
     "https://deno.land/std@0.220.0/fs/_to_path_string.ts": "29bfc9c6c112254961d75cbf6ba814d6de5349767818eb93090cecfa9665591e",
     "https://deno.land/std@0.220.0/fs/ensure_dir.ts": "dffff68de0d10799b5aa9e39dec4e327e12bbd29e762292193684542648c4aeb",
     "https://deno.land/std@0.220.0/fs/walk.ts": "78e1d01a9f75715614bf8d6e58bd77d9fafb1222c41194e607cd3849d7a0e771",
+    "https://deno.land/std@0.220.0/http/server.ts": "cc8ae0de927c3afc855466b89bf9a7a3196223f47f2723e218912c6ca3eb166c",
     "https://deno.land/std@0.220.0/path/_common/assert_path.ts": "dbdd757a465b690b2cc72fc5fb7698c51507dec6bfafce4ca500c46b76ff7bd8",
     "https://deno.land/std@0.220.0/path/_common/basename.ts": "569744855bc8445f3a56087fd2aed56bdad39da971a8d92b138c9913aecc5fa2",
     "https://deno.land/std@0.220.0/path/_common/common.ts": "ef73c2860694775fe8ffcbcdd387f9f97c7a656febf0daa8c73b56f4d8a7bd4c",
