@@ -198,44 +198,34 @@ class PdfTextExtractor:
         self.ocr_languages = ocr_languages
 
     async def extract_text(self, data: bytes) -> str:
-        text = await asyncio.to_thread(self._extract_text_with_pdfplumber, data)
-        if text.strip():
-            return text
+        pages = await asyncio.to_thread(self._extract_pages_with_pdfplumber, data)
+        for page_index, text in enumerate(pages, start=1):
+            if text.strip() or not self.use_ocr_fallback:
+                continue
+            # OCR only pages with no text layer, preserving original page order.
+            try:
+                pages[page_index - 1] = await asyncio.to_thread(
+                    self._extract_text_with_ocr, data, page_index
+                )
+            except Exception as error:
+                raise RuntimeError(f"ページ {page_index} のOCR抽出に失敗しました") from error
+        return "\n\n".join(text.strip() for text in pages if text.strip())
 
-        if not self.use_ocr_fallback:
-            return text
-
-        try:
-            ocr_text = await asyncio.to_thread(self._extract_text_with_ocr, data)
-        except Exception as error:  # pylint: disable=broad-except
-            logger.debug("OCR抽出に失敗しました: %s", error)
-            return text
-
-        return ocr_text
+    def _extract_pages_with_pdfplumber(self, data: bytes) -> list[str]:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            return [(page.extract_text() or "").strip() for page in pdf.pages]
 
     def _extract_text_with_pdfplumber(self, data: bytes) -> str:
-        buffer = io.BytesIO(data)
-        with pdfplumber.open(buffer) as pdf:
-            texts = []
-            for page in pdf.pages:
-                content = page.extract_text() or ""
-                content = content.strip()
-                if content:
-                    texts.append(content)
-        return "\n\n".join(texts)
+        return "\n\n".join(text for text in self._extract_pages_with_pdfplumber(data) if text)
 
-    def _extract_text_with_ocr(self, data: bytes) -> str:
-        from pdf2image import convert_from_bytes  # 遅延インポート
-        import pytesseract  # 遅延インポート
+    def _extract_text_with_ocr(self, data: bytes, page_number: Optional[int] = None) -> str:
+        from pdf2image import convert_from_bytes
+        import pytesseract
 
-        images = convert_from_bytes(data, fmt="png")
-        texts: list[str] = []
-        for image in images:
-            text = pytesseract.image_to_string(image, lang=self.ocr_languages)
-            text = text.strip()
-            if text:
-                texts.append(text)
-        return "\n\n".join(texts)
+        page_options = {} if page_number is None else {"first_page": page_number, "last_page": page_number}
+        images = convert_from_bytes(data, fmt="png", **page_options)
+        texts = [pytesseract.image_to_string(image, lang=self.ocr_languages).strip() for image in images]
+        return "\n\n".join(text for text in texts if text)
 
 
 class LlmFormatter:

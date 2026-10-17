@@ -22,12 +22,11 @@
 
 import sys
 import re
-import os
 import time
 import argparse
 import hashlib
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 # .envファイルから環境変数を読み込む
 try:
@@ -508,11 +507,12 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
         line = normalize_special_chars(line)
 
         # コピーライト情報の検出
-        if any(keyword in line for keyword in [
-            "Published in English", "Copyright", "All rights reserved",
-            "published by arrangement", "Agency", "Press"
-        ]):
+        if re.search(r"^(?:Copyright\b|©|Published in English\b|published by arrangement\b)|All rights reserved", line.strip(), re.IGNORECASE):
             if not in_copyright:
+                if current_section:
+                    result_lines.append(' '.join(current_section))
+                    result_lines.append("\n")
+                    current_section = []
                 in_copyright = True
             copyright_section.append(f"> {line.strip()}")
             continue
@@ -520,7 +520,7 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
             # コピーライトセクションの終了
             if in_copyright and copyright_section:
                 result_lines.append("\n**原書情報:**\n\n")
-                result_lines.extend(copyright_section)
+                result_lines.append("\n".join(copyright_section))
                 result_lines.append("\n\n---\n\n")
                 copyright_section = []
                 in_copyright = False
@@ -564,6 +564,11 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
         if cleaned_line:
             current_section.append(cleaned_line)
 
+    # Flush trailing publication metadata as well as body paragraphs.
+    if copyright_section:
+        result_lines.append("\n**原書情報:**\n\n")
+        result_lines.append("\n".join(copyright_section))
+        result_lines.append("\n")
     # 最後のセクションを追加
     if current_section:
         result_lines.append(' '.join(current_section))
@@ -647,14 +652,14 @@ def convert_pdf_to_markdown(
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(markdown_text)
-        print(f"✓ Markdown整形完了\n")
+        print("✓ Markdown整形完了\n")
     except Exception as e:
         print(f"\n✗ エラー: ファイルの保存に失敗しました: {e}")
         return False
 
     # 完了メッセージ
     print(f"{'='*60}")
-    print(f"✓ 変換完了!")
+    print("✓ 変換完了!")
     print(f"{'='*60}")
     print(f"出力ファイル: {output_path}")
     print(f"ファイルサイズ: {output_path.stat().st_size:,} bytes")
