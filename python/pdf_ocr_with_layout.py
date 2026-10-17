@@ -24,7 +24,7 @@ def get_text_from_layout(
     return "".join(parts)
 
 
-def prepare_document_shards(document_shards: List[documentai.Document]):
+def prepare_document_shards(document_shards: list[documentai.Document]):
     """Validate a complete shard set and retain each page's local text origin.
 
     TextSegment indices are local to a shard. ShardInfo.text_offset maps them
