@@ -625,6 +625,7 @@ uv run python pdf_ocr.py 000928313.pdf
 - 画像ベースのPDF（スキャンされたPDF）からもテキスト抽出可能
 - 画像前処理により、OCRの精度を向上
 - 各ページごとにテキストを抽出し、`.ocr.txt`ファイルとして保存
+- 既存の出力ファイルは上書きしません。再実行して置き換える場合は `--force` を指定します（詳細は [PDF_OUTPUTS.md](PDF_OUTPUTS.md)）
 
 ## Google Text-to-Speech 変換 (google_tts.py)
 
