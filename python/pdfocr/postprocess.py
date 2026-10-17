@@ -77,6 +77,16 @@ def remove_spaces_between_japanese(text: str) -> str:
     return SPACES_BETWEEN_JAPANESE.sub('', text)
 
 
+def join_paragraph_lines(lines: List[str]) -> str:
+    """段落内の行をつなぐ。日本語どうしの境目には空白を入れない"""
+    joined = ''
+    for line in lines:
+        if joined and not (re.match(_JAPANESE_CHAR, joined[-1]) and re.match(_JAPANESE_CHAR, line[0])):
+            joined += ' '
+        joined += line
+    return joined
+
+
 def format_text_to_markdown(text: str, pdf_filename: str) -> str:
     """
     抽出したテキストをMarkdown形式に整形する
@@ -99,7 +109,7 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
 
     def flush_paragraph():
         if current_section:
-            result_lines.append(' '.join(current_section))
+            result_lines.append(join_paragraph_lines(current_section))
             result_lines.append("\n")
             current_section.clear()
 
@@ -143,6 +153,6 @@ def format_text_to_markdown(text: str, pdf_filename: str) -> str:
         result_lines.append("\n".join(copyright_section))
         result_lines.append("\n")
     if current_section:
-        result_lines.append(' '.join(current_section))
+        result_lines.append(join_paragraph_lines(current_section))
 
     return ''.join(result_lines)

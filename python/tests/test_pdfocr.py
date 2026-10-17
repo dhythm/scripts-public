@@ -276,3 +276,15 @@ class TestRemoveSpacesBetweenJapanese:
         """節見出し（一　はじめに）の判定に使う全角スペースは残す"""
         from pdfocr.postprocess import remove_spaces_between_japanese
         assert remove_spaces_between_japanese("一　はじめに") == "一　はじめに"
+
+
+class TestMarkdownLineJoin:
+    """段落内の行をつなぐとき、日本語どうしは空白を入れない"""
+
+    def test_japanese_lines_are_joined_without_space(self):
+        md = format_text_to_markdown("名前はまだ無い。\nどこで生れたか", "book.pdf")
+        assert "名前はまだ無い。どこで生れたか" in md
+
+    def test_english_lines_are_joined_with_space(self):
+        md = format_text_to_markdown("The quick brown\nfox jumps", "book.pdf")
+        assert "The quick brown fox jumps" in md
