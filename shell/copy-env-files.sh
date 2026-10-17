@@ -1,37 +1,73 @@
 #!/bin/bash
+# Usage: ./copy-env-files.sh [--force] SOURCE_DIR DEST_DIR
+# Requires python3. Existing destination files are protected by default.
+set -euo pipefail
+exec python3 - "$@" <<'PYTHON'
+import argparse
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
 
-# 使用法: ./copy-env-files.sh <SOURCE_DIR> <DEST_DIR>
-# 例: ./copy-env-files.sh ./main-repo ./worktrees/dev-branch
+parser = argparse.ArgumentParser(description="Copy .env* files without exposing or clobbering them.")
+parser.add_argument("--force", action="store_true", help="atomically replace existing files")
+parser.add_argument("source")
+parser.add_argument("destination")
+args = parser.parse_args()
+try:
+    source = Path(args.source).resolve(strict=True)
+    destination = Path(args.destination).resolve(strict=True)
+    if not source.is_dir() or not destination.is_dir():
+        raise ValueError("Source and destination must be directories")
+    if source == destination:
+        raise ValueError("Source and destination must differ")
+    copies = []
+    for root, directories, files in os.walk(source, followlinks=False):
+        root = Path(root)
+        directories[:] = [name for name in directories
+                          if name not in ("node_modules", ".git")
+                          and not (root / name).is_symlink()
+                          and (root / name).resolve() != destination]
+        for name in sorted(files):
+            src = root / name
+            if not name.startswith(".env") or src.is_symlink() or not src.is_file():
+                continue
+            target = destination / src.relative_to(source)
+            copies.append((src, target))
 
-set -e
+    def validate(target):
+        # Do not follow destination symlinks into unrelated directories or files.
+        for part in [target, *target.parents]:
+            if part == destination:
+                break
+            if part.is_symlink():
+                raise ValueError("Refusing a symbolic-link destination")
+        if target.exists() and (not args.force or not target.is_file()):
+            raise ValueError("Destination exists; use --force to replace regular files")
 
-SRC_DIR="$1"
-DEST_DIR="$2"
-
-if [[ -z "$SRC_DIR" || -z "$DEST_DIR" ]]; then
-  echo "Usage: $0 <source_dir> <dest_dir>"
-  exit 1
-fi
-
-# 実体の絶対パスを取得
-SRC_DIR="$(cd "$SRC_DIR" && pwd)"
-DEST_DIR="$(cd "$DEST_DIR" && pwd)"
-
-echo "Copying .env files from $SRC_DIR to $DEST_DIR ..."
-
-# 再帰的に .env* を探索し、同じパス構造でコピー
-find "$SRC_DIR" \( -name "node_modules" -o -name ".git" \) -prune -o -type f -name ".env*" -print | while read -r src_file; do
-  # 相対パスを取得
-  rel_path="${src_file#$SRC_DIR/}"
-  dest_file="$DEST_DIR/$rel_path"
-
-  # 必要なディレクトリを作成
-  mkdir -p "$(dirname "$dest_file")"
-
-  # コピー
-  cp "$src_file" "$dest_file"
-
-  echo "Copied: $rel_path -> $dest_file"
-done
-
-echo "✅ Done."
+    # Find known conflicts before copying anything.
+    for _, target in copies:
+        validate(target)
+    for src, target in copies:
+        validate(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".env-copy-", dir=target.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream, src.open("rb") as incoming:
+                shutil.copyfileobj(incoming, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            validate(target)
+            if args.force:
+                os.replace(temporary, target)
+            else:
+                os.link(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    print(f"Copied {len(copies)} environment files")
+except (OSError, ValueError) as error:
+    print(f"Error: {error}", file=sys.stderr)
+    sys.exit(1)
+PYTHON
