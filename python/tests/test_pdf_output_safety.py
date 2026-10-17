@@ -69,3 +69,26 @@ def test_cli_returns_failure(monkeypatch, module, function):
     with pytest.raises(SystemExit) as exc:
         module.main()
     assert exc.value.code == 1
+
+
+def test_force_does_not_follow_hard_link_to_input(tmp_path):
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"original")
+    target = tmp_path / "output.md"
+    target.hardlink_to(source)
+    assert not pdf_to_markdown.convert_pdf_to_markdown(source, target, overwrite=True)
+    assert source.read_bytes() == b"original"
+
+
+def test_failed_atomic_replace_preserves_previous_output(tmp_path, monkeypatch):
+    import pdf_output
+    source, target = tmp_path / "input.pdf", tmp_path / "output.txt"
+    source.write_bytes(b"source")
+    target.write_text("previous")
+    def fail(*args):
+        raise OSError("simulated replace failure")
+    monkeypatch.setattr(pdf_output.os, "replace", fail)
+    with pytest.raises(OSError):
+        pdf_output.save_text(source, target, "new", overwrite=True)
+    assert target.read_text() == "previous"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["input.pdf", "output.txt"]

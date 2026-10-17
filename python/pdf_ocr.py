@@ -1,3 +1,4 @@
+from pdf_output import save_text, validate_output
 import argparse
 import pytesseract
 from pytesseract import TesseractError, TesseractNotFoundError
@@ -180,9 +181,8 @@ def extract_text_with_ocr(pdf_path, *, overwrite=False):
         
         # 出力ファイルのパスを生成（同じディレクトリに_ocr.txt拡張子で）
         output_path = input_path.with_suffix('.ocr.txt')
-        if output_path.exists() and not overwrite:
-            print(f'エラー: 出力ファイルが既に存在します: {output_path}（上書きは --force）')
-            return False
+        validate_output(input_path, output_path, overwrite=overwrite)
+
         
         print("PDFを画像に変換中...")
         images = pdf_to_images(pdf_path)
@@ -214,8 +214,7 @@ def extract_text_with_ocr(pdf_path, *, overwrite=False):
             return False
 
         # テキストをファイルに保存
-        with open(output_path, mode='w' if overwrite else 'x', encoding='utf-8') as output_file:
-            output_file.write(all_text)
+        save_text(input_path, output_path, all_text, overwrite=overwrite)
         
         print(f"\nOCR処理完了！結果は「{output_path}」に保存されました。")
         

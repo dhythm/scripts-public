@@ -1,3 +1,4 @@
+from pdf_output import save_text, validate_output
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -603,11 +604,10 @@ def convert_pdf_to_markdown(
     else:
         output_path = Path(output_path)
 
-    if output_path.resolve() == pdf_file.resolve():
-        print("✗ エラー: 入力PDFを出力先には指定できません")
-        return False
-    if output_path.exists() and not overwrite:
-        print(f"✗ エラー: 出力先が既に存在します: {output_path}（上書きは --force）")
+    try:
+        validate_output(pdf_file, output_path, overwrite=overwrite)
+    except (ValueError, OSError) as error:
+        print(f"✗ エラー: {error}")
         return False
 
     mode_str = "LLM校正あり" if use_llm else "標準モード"
@@ -652,8 +652,7 @@ def convert_pdf_to_markdown(
 
     # ファイルに保存
     try:
-        with open(output_path, 'w' if overwrite else 'x', encoding='utf-8') as f:
-            f.write(markdown_text)
+        save_text(pdf_file, output_path, markdown_text, overwrite=overwrite)
         print("✓ Markdown整形完了\n")
     except Exception as e:
         print(f"\n✗ エラー: ファイルの保存に失敗しました: {e}")

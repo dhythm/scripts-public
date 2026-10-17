@@ -1,3 +1,4 @@
+from pdf_output import save_text, validate_output
 import argparse
 import pdfplumber
 import sys
@@ -29,9 +30,8 @@ def extract_text_from_pdf(pdf_path, *, overwrite=False):
         
         # 出力ファイルのパスを生成（同じディレクトリに.txt拡張子で）
         output_path = input_path.with_suffix('.txt')
-        if output_path.exists() and not overwrite:
-            print(f'エラー: 出力ファイルが既に存在します: {output_path}（上書きは --force）')
-            return False
+        validate_output(input_path, output_path, overwrite=overwrite)
+
         
         # PDFからテキストを抽出（警告を抑制）
         all_text = ""
@@ -58,8 +58,7 @@ def extract_text_from_pdf(pdf_path, *, overwrite=False):
             return False
 
         # テキストをファイルに保存
-        with open(output_path, mode='w' if overwrite else 'x', encoding='utf-8') as output_file:
-            output_file.write(all_text)
+        save_text(input_path, output_path, all_text, overwrite=overwrite)
         
         print(f"テキスト抽出完了！結果は「{output_path}」に保存されました。")
         if skipped_pages:
