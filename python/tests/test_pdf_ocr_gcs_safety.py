@@ -94,3 +94,18 @@ def test_unknown_generation_is_never_deleted(run_env):
     run_env.output.generation = None
     process(run_env)
     run_env.output.delete.assert_not_called()
+
+
+def test_typed_operation_metadata_preserves_failure_details(run_env):
+    run_env.operation.result.side_effect = TimeoutError("still running")
+    run_env.operation.metadata = ocr.documentai.BatchProcessMetadata(
+        individual_process_statuses=[{
+            "input_gcs_source": "gs://bucket/run/input.pdf",
+            "status": {"code": 13, "message": "service failure"},
+        }]
+    )
+    with pytest.raises(Exception, match="still running") as exc:
+        process(run_env)
+    assert "service failure" in str(exc.value)
+    run_env.uploaded.delete.assert_not_called()
+    run_env.output.delete.assert_not_called()

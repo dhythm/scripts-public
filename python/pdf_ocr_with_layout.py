@@ -125,7 +125,14 @@ def batch_process_document_with_bounds(
             print("非同期処理が完了しました。")
         except Exception as e:
             # 非同期処理が失敗した場合、詳細なエラー情報を取得する
-            metadata = documentai.BatchProcessMetadata.deserialize(operation.metadata.value)
+            # GAPIC operations expose typed metadata; do not mask the original
+            # exception if metadata is absent or cannot be decoded.
+            metadata = operation.metadata
+            if not isinstance(metadata, documentai.BatchProcessMetadata):
+                try:
+                    metadata = documentai.BatchProcessMetadata.deserialize(metadata.value)
+                except Exception:
+                    metadata = documentai.BatchProcessMetadata()
             error_message = f"Document AIの非同期処理に失敗しました: {e}\n"
             
             for process in metadata.individual_process_statuses:
