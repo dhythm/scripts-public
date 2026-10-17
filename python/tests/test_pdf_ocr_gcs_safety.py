@@ -32,7 +32,7 @@ def run_env(monkeypatch, tmp_path):
     monkeypatch.setattr(ocr.storage, "Client", storage_ctor)
     monkeypatch.setattr(ocr.documentai, "DocumentProcessorServiceClient", docai_ctor)
     monkeypatch.setattr(ocr, "create_or_get_bucket", Mock(return_value=bucket))
-    monkeypatch.setattr(ocr.documentai.Document, "from_json", Mock(return_value=SimpleNamespace(text="", pages=[])))
+    monkeypatch.setattr(ocr.documentai.Document, "from_json", Mock(return_value=ocr.documentai.Document(text="", pages=[])))
     return SimpleNamespace(source=source, bucket=bucket, uploaded=uploaded, output=output,
                            storage=storage_ctor, docai=docai_ctor, operation=operation)
 
@@ -76,7 +76,8 @@ def test_failure_keeps_input_and_partial_output(run_env, monkeypatch, capsys, fa
     else:
         run_env.operation.result.side_effect = TimeoutError("pending")
         monkeypatch.setattr(ocr.documentai.BatchProcessMetadata, "deserialize", Mock(return_value=SimpleNamespace(individual_process_statuses=[])))
-    with pytest.raises(Exception):
+    expected = {"upload": "upload failed", "parse": "download failed", "no-output": "処理結果が見つかりません", "operation": "pending"}[failure]
+    with pytest.raises(Exception, match=expected):
         process(run_env)
     run_env.uploaded.delete.assert_not_called()
     run_env.output.delete.assert_not_called()
