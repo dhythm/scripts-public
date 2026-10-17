@@ -562,7 +562,10 @@ function ensureString(value: unknown, label: string): string {
 }
 
 function printHumanReadable(result: FinalResult): void {
-  logInfo([
+  const writeResult = (message: string | string[]): void => {
+    process.stdout.write(`${Array.isArray(message) ? message.join("\n") : message}\n`);
+  };
+  writeResult([
     "=== 判定結果 ===",
     `分類: ${result.classification}`,
     `理由: ${result.reasoning}`,
@@ -571,9 +574,9 @@ function printHumanReadable(result: FinalResult): void {
     `未解決事項: ${result.pendingNeeds || "なし"}`,
   ]);
   if (result.followUpSources.length) {
-    logInfo("--- 三次情報を補完する一次/二次情報 ---");
+    writeResult("--- 三次情報を補完する一次/二次情報 ---");
     result.followUpSources.forEach((source, index) => {
-      logInfo(
+      writeResult(
         `[${index + 1}] (${source.classification}) ${source.title}\n    URL: ${source.url}\n    関係: ${source.relationToOriginal}\n    信頼理由: ${source.whyTrusted}\n    サマリー: ${source.summary}`
       );
     });

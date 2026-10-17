@@ -119,6 +119,33 @@ describe("research CLI output and failure status", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it("keeps the default human-readable result on stdout and diagnostics on stderr", async () => {
+    args("--url", "https://example.test/article");
+    await analyze();
+    const text = stdout.mock.calls.map((call: unknown[]) => call[0]).join("");
+    expect(text).toContain("=== 判定結果 ===\n分類: primary");
+    expect(text).toContain("要約: 要約です");
+    expect(text).not.toContain("URL解析を開始");
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("=== 判定結果 ==="));
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("URL解析を開始"));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("keeps tertiary follow-up source details on stdout", async () => {
+    args("--url", "https://example.test/article");
+    mocks.create.mockResolvedValueOnce({ output_text: JSON.stringify({
+      ...sourcePayload,
+      classification: "tertiary",
+      followUpSources: [{ classification: "primary", title: "公式資料", url: "https://example.test/original", summary: "原典要約", whyTrusted: "公式発表", relationToOriginal: "記事の引用元" }],
+    }) });
+    await analyze();
+    const text = stdout.mock.calls.map((call: unknown[]) => call[0]).join("");
+    expect(text).toContain("三次情報を補完する一次/二次情報");
+    expect(text).toContain("公式資料");
+    expect(text).toContain("https://example.test/original");
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("公式資料"));
+  });
+
   it("creates the source-origin output directory before the model call", async () => {
     args("--url", "https://example.test/article", "--json", "--output", "reports/origin.json");
     await analyze();
