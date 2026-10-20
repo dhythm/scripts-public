@@ -397,14 +397,16 @@ PDFをローカルだけでテキスト/Markdownにするツールです。ク�
 |---------|------|------|
 | NDLOCR-Lite | デフォルト（`--engine ndl`） | 国立国会図書館のOCR。縦書きの和書に強く、GPUなしで高速。ルビ・柱・ノンブルは本文と別の領域として検出し、文字認識の対象から外す設計。CC BY 4.0 |
 | YomiToku | `--engine yomitoku` | 読み順の推定や表に強い。ルビは除去する。Apple SiliconではGPU（mps）を使用。個人利用は無料（商用は有料、CC BY-NC-SA 4.0） |
+| Indra OCR | `--engine indra` | Datalab製の軽量モデル（ONNX Runtime、PyTorch・GPU不要）。CPUだけで非常に高速で、全コアで並列処理する。横書きの日本語（かな・漢字）に強く、柱・ノンブルはレイアウト解析で除外する。縦書きも読めるが精度は落ちる。コードはApache 2.0、モデルは改変版OpenRAIL-M（研究・個人利用・小規模スタートアップは無料） |
 
-どちらも依存パッケージのバージョンがこのプロジェクトと衝突するため、`~/.cache/` 配下の専用の仮想環境にインストールして呼び出します。
+いずれも依存パッケージのバージョンがこのプロジェクトと衝突するため、`~/.cache/` 配下の専用の仮想環境にインストールして呼び出します。
 
 ### セットアップ（初回のみ）
 
 ```sh
 uv run python -m pdfocr setup ndl        # NDLOCR-Lite（約700MB）
 uv run python -m pdfocr setup yomitoku   # YomiToku を使う場合（PyTorchを含むため数GB）
+uv run python -m pdfocr setup indra      # Indra OCR を使う場合（モデル約76MBは初回実行時にダウンロード）
 ```
 
 ### 使用方法
@@ -419,6 +421,9 @@ uv run python -m pdfocr book.pdf --format md
 # YomiToku で全ページOCR
 uv run python -m pdfocr scan.pdf --engine yomitoku --ocr always
 
+# Indra OCR で横書きのスキャン資料をOCR
+uv run python -m pdfocr scan.pdf --engine indra
+
 # 既存の出力を上書き
 uv run python -m pdfocr book.pdf --force
 ```
@@ -428,7 +433,7 @@ uv run python -m pdfocr book.pdf --force
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
 | `--format` | `txt` または `md` | `txt` |
-| `--engine` | `ndl` または `yomitoku` | `ndl` |
+| `--engine` | `ndl` / `yomitoku` / `indra` | `ndl` |
 | `--ocr` | `auto`（テキスト層が使えないページだけOCR）/ `always`（全ページOCR）/ `never`（テキスト層のみ） | `auto` |
 | `--dpi` | OCR時にページを画像化する解像度 | 300 |
 | `--keep-margins` | テキスト層の抽出で、ページ上下の帯（上12%・下13%）にある柱とページ番号を除外しない | 除外する |
