@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pdfocr.engines import parse_ndl_json, parse_yomitoku_json
+from pdfocr.engines import parse_indra_jsonl, parse_ndl_json, parse_yomitoku_json
 from pdfocr.postprocess import (
     dedupe_consecutive_pages,
     format_text_to_markdown,
@@ -181,6 +181,81 @@ class TestParseYomitokuJson:
         assert parse_yomitoku_json(path) == "本文"
 
 
+class TestParseIndraJsonl:
+    """Indra OCR の JSON Lines 出力から読み順どおりに本文を取り出す"""
+
+    def _write(self, tmp_path, **page):
+        record = {"page": 0, "source": "ocr", "note": "", "lines": [], "blocks": [], **page}
+        path = tmp_path / "page.jsonl"
+        path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+        return path
+
+    def test_joins_blocks_and_drops_page_header_and_footer(self, tmp_path):
+        path = self._write(tmp_path, blocks=[
+            {"label": "Page-Header", "bbox": [0, 0, 1, 1], "text": "吾輩は猫である 12"},
+            {"label": "Section-Header", "bbox": [0, 0, 1, 1], "text": "第一章 はじまり"},
+            {"label": "Text", "bbox": [0, 0, 1, 1], "text": "一行目\n二行目"},
+            {"label": "Page-Footer", "bbox": [0, 0, 1, 1], "text": "12"},
+        ])
+        assert parse_indra_jsonl(path) == "第一章 はじまり\n\n一行目\n二行目"
+
+    def test_falls_back_to_lines_without_blocks(self, tmp_path):
+        path = self._write(tmp_path, lines=[
+            {"box": [0, 0, 1, 1], "text": "一行目", "conf": 0.9},
+            {"box": [0, 0, 1, 1], "text": "二行目", "conf": 0.9},
+        ])
+        assert parse_indra_jsonl(path) == "一行目\n二行目"
+
+    def test_failed_page_is_empty(self, tmp_path, capsys):
+        path = self._write(tmp_path, source="error", note="decode failed")
+        assert parse_indra_jsonl(path) == ""
+        assert "decode failed" in capsys.readouterr().err
+
+
+class TestRunIndra:
+    """Indra OCR の CLI 呼び出し"""
+
+    def test_runs_cli_in_ocr_mode_and_reads_each_output(self, tmp_path, monkeypatch):
+        from pdfocr import engines
+        install = tmp_path / "indra"
+        (install / ".venv" / "bin").mkdir(parents=True)
+        (install / ".venv" / "bin" / "python").touch()
+        images = [tmp_path / "pages" / "page_0001.png", tmp_path / "pages" / "page_0002.png"]
+        calls = []
+
+        def fake_run(cmd, check):
+            calls.append(cmd)
+            out_dir = Path(cmd[cmd.index("--out") + 1])
+            out_dir.mkdir(parents=True)
+            for image in images:
+                record = {"source": "ocr", "blocks": [{"label": "Text", "text": f"本文{image.stem}"}]}
+                (out_dir / f"{image.stem}.jsonl").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+        monkeypatch.setattr(engines.subprocess, "run", fake_run)
+        results = engines.run_indra(images, tmp_path, path=install)
+
+        cmd = calls[0]
+        assert cmd[0] == str(install / ".venv" / "bin" / "indra-ocr")
+        assert cmd[1:3] == [str(p) for p in images]
+        assert cmd[cmd.index("--mode") + 1] == "ocr"
+        assert cmd[cmd.index("--format") + 1] == "json"
+        assert results == {images[0]: "本文page_0001", images[1]: "本文page_0002"}
+
+    def test_missing_output_raises(self, tmp_path, monkeypatch):
+        from pdfocr import engines
+        install = tmp_path / "indra"
+        (install / ".venv" / "bin").mkdir(parents=True)
+        (install / ".venv" / "bin" / "python").touch()
+        monkeypatch.setattr(engines.subprocess, "run", lambda cmd, check: None)
+        with pytest.raises(RuntimeError, match="page_0001.png"):
+            engines.run_indra([tmp_path / "page_0001.png"], tmp_path, path=install)
+
+    def test_not_installed_raises_with_setup_hint(self, tmp_path):
+        from pdfocr import engines
+        with pytest.raises(RuntimeError, match="setup indra"):
+            engines.run_indra([tmp_path / "page_0001.png"], tmp_path, path=tmp_path / "none")
+
+
 class TestSectionHeadings:
     """節見出し（一　はじめに / 一．/ 一、）の検出"""
 
@@ -289,6 +364,26 @@ class TestCli:
         monkeypatch.setattr(cli, "setup_ndl", lambda update=False: called.append(("ndl", update)))
         assert cli.main(["setup", "ndl", "--update"]) == 0
         assert called == [("ndl", True)]
+
+
+    def test_setup_dispatches_to_indra(self, monkeypatch):
+        from pdfocr import cli
+        called = []
+        monkeypatch.setattr(cli, "setup_indra", lambda update=False: called.append(("indra", update)))
+        assert cli.main(["setup", "indra"]) == 0
+        assert called == [("indra", False)]
+
+    def test_engine_indra_uses_indra_runner(self, pdf, monkeypatch):
+        from pdfocr import cli
+        used = []
+
+        def fake_convert(*_a, run_ocr, **_k):
+            used.append(run_ocr)
+            return [self.GOOD]
+
+        monkeypatch.setattr(cli, "convert", fake_convert)
+        assert cli.main([str(pdf), "--engine", "indra"]) == 0
+        assert used == [cli.run_indra]
 
 
 class TestRemoveSpacesBetweenJapanese:
