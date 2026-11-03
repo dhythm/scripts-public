@@ -196,6 +196,35 @@ uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_red
 uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise --noise_reduce_amount 0.6
 ```
 
+###### NVIDIA RE-USE でノイズ除去する（`--denoise_engine`）
+
+`--denoise` で効果が足りない場合は、DNN ベースの音声強調モデル NVIDIA RE-USE でノイズを除去できます。
+RE-USE はノイズ除去専用のモデルで、文字起こしはしません。[speech.cpp](https://github.com/nyosegawa/speech.cpp)（Apple Silicon の Metal GPU 対応）の `speech` コマンドを呼び出して前処理し、その結果を文字起こしします。
+既定値は従来どおり `noisereduce` で、`--denoise_engine` を指定したときだけ RE-USE を使います。
+
+```sh
+# speech.cpp のインストール（リモートスクリプトを実行するため、事前に内容を確認すること）
+curl -fsSL https://raw.githubusercontent.com/nyosegawa/speech.cpp/main/install.sh | sh
+
+# RE-USE でノイズ除去してから文字起こし（初回はモデルを自動ダウンロード）
+uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise_engine re-use
+
+# 笑い声を残したい場合
+uv run python transcribe_faster_whisper.py noisy_audio.m4a --denoise_engine re-use-laughter
+```
+
+- 入力（動画を含む）は元のサンプルレートのままモノラルWAVに変換して RE-USE に渡し、ノイズ除去の後で16kHzに変換します。
+- `--denoise_engine re-use` を指定した場合、SN比による自動判定と noisereduce によるノイズ除去は行いません（二重処理を避けるため）。`--no_denoise` を併用すると RE-USE も使いません。
+- 音声強調によって必ず認識精度が上がるとは限りません。処理によって生じる音のゆがみで、認識漏れや存在しない言葉が出力される場合もあるため、元の音声と結果を比べて判断してください。
+
+手動で処理したい場合は、次のように別々に実行することもできます。
+
+```sh
+ffmpeg -i input.mp4 -vn -ac 1 noisy.wav
+speech enhance re-use noisy.wav -o clean.wav
+uv run python transcribe_faster_whisper.py clean.wav --no_denoise
+```
+
 ##### 3. 音声が小さくノイズも多い場合
 
 ```sh
@@ -237,6 +266,7 @@ uv run python transcribe_faster_whisper.py audio.m4a --vad_speech_pad 600
 | `--normalize` / `--no_normalize` | 音声をピークノーマライズ（-3.0 dBFS） | 有効 | 無効化したい場合のみ `--no_normalize` |
 | `--gain` | ゲイン調整(dB)。正の値で音量アップ | 0 | 10-15 dB |
 | `--denoise` / `--no_denoise` | ノイズ除去を強制的に有効化 / 無効化 | 自動判定（SN比10dB未満で強度0.5、5dB未満で0.8） | 通常は指定不要 |
+| `--denoise_engine` | ノイズ除去エンジン（`noisereduce` / `re-use` / `re-use-laughter`）。`re-use` 系は speech.cpp が必要 | `noisereduce` | 通常は指定不要 |
 | `--noise_reduce_amount` | `--denoise` 指定時のノイズ除去の強度（0.0-1.0） | 0.8 | 0.5-0.6（強すぎると音声劣化） |
 
 ##### 認識精度オプション

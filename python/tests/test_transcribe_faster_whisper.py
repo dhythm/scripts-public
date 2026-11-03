@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from transcribe_faster_whisper import (
     FasterWhisperTranscriber,
     Qwen3ASRTranscriber,
     analyze_audio_levels,
+    build_ffmpeg_extract_command,
+    build_speech_enhance_command,
     build_qwen_context,
     choose_vad_threshold,
     chunks_to_segments,
@@ -22,6 +25,7 @@ from transcribe_faster_whisper import (
     find_changed_options,
     normalize_peak,
     recommend_preprocessing,
+    resolve_denoise_plan,
     resolve_engine,
     resolve_diarization,
     resolve_model,
@@ -493,3 +497,93 @@ class TestQwen3Diarization:
         assert session.kwargs['diarization_max_speakers'] == 8
         assert [s['speaker'] for s in result['segments']] == ['SPEAKER_00', 'SPEAKER_01']
         assert result['duration'] == 30.0
+
+
+class TestBuildFfmpegExtractCommand:
+    """ffmpeg による音声抽出コマンド組み立てのテスト"""
+
+    def test_default_resamples_to_16khz(self):
+        cmd = build_ffmpeg_extract_command(Path('in.mp4'), Path('out.wav'))
+        assert cmd[:3] == ['ffmpeg', '-i', 'in.mp4']
+        assert cmd[cmd.index('-ar') + 1] == '16000'
+        assert cmd[cmd.index('-ac') + 1] == '1'
+        assert cmd[-1] == 'out.wav'
+
+    def test_none_sample_rate_keeps_original_rate(self):
+        cmd = build_ffmpeg_extract_command(Path('in.mp4'), Path('out.wav'), sample_rate=None)
+        assert '-ar' not in cmd
+        assert cmd[cmd.index('-ac') + 1] == '1'
+
+
+class TestBuildSpeechEnhanceCommand:
+    """speech.cpp の RE-USE 呼び出しコマンド組み立てのテスト"""
+
+    def test_builds_re_use_command(self):
+        cmd = build_speech_enhance_command(Path('noisy.wav'), Path('clean.wav'), 're-use')
+        assert cmd == ['speech', 'enhance', 're-use', 'noisy.wav', '-o', 'clean.wav']
+
+    def test_builds_laughter_model_command(self):
+        cmd = build_speech_enhance_command(Path('a.wav'), Path('b.wav'), 're-use-laughter')
+        assert cmd[2] == 're-use-laughter'
+
+
+class TestResolveDenoisePlan:
+    """ノイズ除去エンジンの選択ロジックのテスト（既定は既存挙動を維持）"""
+
+    @pytest.mark.parametrize('denoise', [None, True, False])
+    def test_noisereduce_keeps_existing_behavior(self, denoise):
+        assert resolve_denoise_plan(denoise, 'noisereduce') == (False, denoise)
+
+    @pytest.mark.parametrize('denoise', [None, True])
+    def test_re_use_runs_dnn_and_disables_noisereduce(self, denoise):
+        assert resolve_denoise_plan(denoise, 're-use') == (True, False)
+
+    def test_no_denoise_wins_over_re_use(self):
+        assert resolve_denoise_plan(False, 're-use') == (False, False)
+
+    def test_unknown_engine_raises(self):
+        with pytest.raises(ValueError):
+            resolve_denoise_plan(None, 'unknown')
+
+
+class TestEnhanceWithSpeechCpp:
+    """speech.cpp による音声強調の実行テスト（subprocess はモック）"""
+
+    def test_converts_then_enhances(self, tmp_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, '', '')
+
+        monkeypatch.setattr(subprocess, 'run', fake_run)
+        transcriber = FasterWhisperTranscriber.__new__(FasterWhisperTranscriber)
+        out = transcriber.enhance_with_speech_cpp(tmp_path / 'in.m4a', tmp_path, 're-use')
+
+        assert calls[0][0] == 'ffmpeg' and '-ar' not in calls[0]
+        assert calls[1][:3] == ['speech', 'enhance', 're-use']
+        assert calls[1][3] == calls[0][-1]
+        assert calls[1][-1] == str(out)
+        assert out.parent == tmp_path
+
+    def test_missing_speech_command_raises_with_install_hint(self, tmp_path, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == 'speech':
+                raise FileNotFoundError(cmd[0])
+            return subprocess.CompletedProcess(cmd, 0, '', '')
+
+        monkeypatch.setattr(subprocess, 'run', fake_run)
+        transcriber = FasterWhisperTranscriber.__new__(FasterWhisperTranscriber)
+        with pytest.raises(RuntimeError, match='speech.cpp'):
+            transcriber.enhance_with_speech_cpp(tmp_path / 'in.wav', tmp_path, 're-use')
+
+    def test_speech_failure_raises_with_stderr(self, tmp_path, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == 'speech':
+                raise subprocess.CalledProcessError(1, cmd, stderr='model error')
+            return subprocess.CompletedProcess(cmd, 0, '', '')
+
+        monkeypatch.setattr(subprocess, 'run', fake_run)
+        transcriber = FasterWhisperTranscriber.__new__(FasterWhisperTranscriber)
+        with pytest.raises(RuntimeError, match='model error'):
+            transcriber.enhance_with_speech_cpp(tmp_path / 'in.wav', tmp_path, 're-use')

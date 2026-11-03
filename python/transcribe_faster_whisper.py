@@ -45,6 +45,61 @@ VAD_AUTO_COVERAGE = 0.95
 NORMALIZE_TARGET_PEAK_DBFS = -3.0
 
 
+# ノイズ除去エンジン。noisereduce は既存処理、re-use 系は speech.cpp の NVIDIA RE-USE を使う
+DENOISE_ENGINES = ['noisereduce', 're-use', 're-use-laughter']
+DEFAULT_DENOISE_ENGINE = 'noisereduce'
+
+
+def build_ffmpeg_extract_command(
+    input_path: Path,
+    output_path: Path,
+    sample_rate: Optional[int] = 16000
+) -> List[str]:
+    """
+    音声/動画からモノラル16bit PCMのWAVを抽出するffmpegコマンドを組み立てる
+
+    sample_rate が None の場合は元のサンプルレートを維持する。
+    """
+    cmd = [
+        'ffmpeg',
+        '-i', str(input_path),
+        '-vn',                    # 映像なし
+        '-acodec', 'pcm_s16le',   # 16bit PCM
+    ]
+    if sample_rate is not None:
+        cmd += ['-ar', str(sample_rate)]
+    cmd += [
+        '-ac', '1',               # モノラル
+        '-y',                     # 上書き確認なし
+        str(output_path)
+    ]
+    return cmd
+
+
+def build_speech_enhance_command(input_path: Path, output_path: Path, model: str) -> List[str]:
+    """speech.cpp の音声強調（RE-USE）コマンドを組み立てる"""
+    return ['speech', 'enhance', model, str(input_path), '-o', str(output_path)]
+
+
+def resolve_denoise_plan(denoise: Optional[bool], denoise_engine: str) -> tuple:
+    """
+    ノイズ除去エンジンに応じて処理方針を決める
+
+    Returns:
+        (speech.cpp の RE-USE を使うか, noisereduce 側に渡す denoise の値)
+        noisereduce では既存の挙動をそのまま維持する。
+        re-use 系では --no_denoise 指定時を除き RE-USE を適用し、二重処理を避けるため
+        noisereduce は無効にする。
+    """
+    if denoise_engine not in DENOISE_ENGINES:
+        raise ValueError(
+            f"不明なノイズ除去エンジン: {denoise_engine}（{', '.join(DENOISE_ENGINES)} のいずれか）"
+        )
+    if denoise_engine == DEFAULT_DENOISE_ENGINE:
+        return False, denoise
+    return denoise is not False, False
+
+
 def compute_normalize_gain(
     peak_dbfs: float,
     target_peak_dbfs: float = NORMALIZE_TARGET_PEAK_DBFS
@@ -330,13 +385,19 @@ class FasterWhisperTranscriber:
         """動画ファイルかどうかを判定"""
         return file_path.suffix.lower() in self.SUPPORTED_VIDEO_FORMATS
 
-    def extract_audio_from_video(self, video_path: Path, output_dir: Path) -> Path:
+    def extract_audio_from_video(
+        self,
+        video_path: Path,
+        output_dir: Path,
+        sample_rate: Optional[int] = 16000
+    ) -> Path:
         """
         動画ファイルから音声を抽出
 
         Args:
             video_path: 動画ファイルのパス
             output_dir: 出力ディレクトリ
+            sample_rate: 出力のサンプルレート（既定は16kHz、Noneで元のレートを維持）
 
         Returns:
             抽出した音声ファイルのパス
@@ -345,16 +406,7 @@ class FasterWhisperTranscriber:
 
         output_path = output_dir / f"{video_path.stem}_audio.wav"
 
-        cmd = [
-            'ffmpeg',
-            '-i', str(video_path),
-            '-vn',                    # 映像なし
-            '-acodec', 'pcm_s16le',   # 16bit PCM
-            '-ar', '16000',           # 16kHz (Whisper推奨)
-            '-ac', '1',               # モノラル
-            '-y',                     # 上書き確認なし
-            str(output_path)
-        ]
+        cmd = build_ffmpeg_extract_command(video_path, output_path, sample_rate)
 
         try:
             subprocess.run(
@@ -398,6 +450,60 @@ class FasterWhisperTranscriber:
         """音声ファイルの検証（後方互換性のため残す）"""
         self.validate_input_file(file_path)
     
+    def enhance_with_speech_cpp(
+        self,
+        input_path: Path,
+        output_dir: Path,
+        model: str = 're-use'
+    ) -> Path:
+        """
+        speech.cpp の NVIDIA RE-USE で音声を強調（ノイズ除去）する
+
+        入力を元のサンプルレートのままモノラルWAVに変換してから処理する。
+        16kHz へのリサンプリングは後段の前処理で行う。
+
+        Args:
+            input_path: 音声/動画ファイルのパス
+            output_dir: 中間ファイル・出力の保存先ディレクトリ
+            model: speech.cpp のモデル名（re-use / re-use-laughter）
+
+        Returns:
+            ノイズ除去後のWAVファイルのパス
+        """
+        source_wav = output_dir / f"{input_path.stem}_source.wav"
+        enhanced_wav = output_dir / f"{input_path.stem}_enhanced.wav"
+
+        print(f"RE-USE用に音声をWAVへ変換中（元のサンプルレートを維持）: {input_path.name}")
+        try:
+            subprocess.run(
+                build_ffmpeg_extract_command(input_path, source_wav, sample_rate=None),
+                capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ffmpegエラー: {e.stderr}")
+        except FileNotFoundError:
+            raise RuntimeError(
+                "ffmpegが見つかりません。ffmpegをインストールしてください。\n"
+                "macOS: brew install ffmpeg"
+            )
+
+        print(f"NVIDIA RE-USE でノイズ除去を実行中... (モデル: {model})")
+        try:
+            subprocess.run(
+                build_speech_enhance_command(source_wav, enhanced_wav, model),
+                capture_output=True, text=True, check=True
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"speech.cpp（RE-USE）の実行に失敗しました: {e.stderr}")
+        except FileNotFoundError:
+            raise RuntimeError(
+                "speech コマンドが見つかりません。speech.cpp をインストールしてください。\n"
+                "https://github.com/nyosegawa/speech.cpp"
+            )
+
+        print("RE-USE によるノイズ除去が完了しました。")
+        return enhanced_wav
+
     def apply_noise_reduction(
         self,
         audio: AudioSegment,
@@ -692,7 +798,8 @@ class FasterWhisperTranscriber:
         normalize: bool = True,
         gain_db: float = 0,
         denoise: Optional[bool] = False,
-        noise_reduce_amount: float = 0.8
+        noise_reduce_amount: float = 0.8,
+        denoise_engine: str = DEFAULT_DENOISE_ENGINE
     ) -> Dict:
         """
         音声ファイルを文字起こし
@@ -722,6 +829,8 @@ class FasterWhisperTranscriber:
             gain_db: ゲイン調整(dB)
             denoise: ノイズ除去を適用。Noneの場合は音声を解析して自動判定
             noise_reduce_amount: ノイズ除去の強度（0.0-1.0）
+            denoise_engine: ノイズ除去エンジン。既定の noisereduce は従来どおり。
+                re-use / re-use-laughter を指定した場合のみ speech.cpp の RE-USE を使う
 
         Returns:
             文字起こし結果の辞書
@@ -729,11 +838,18 @@ class FasterWhisperTranscriber:
         input_path = Path(audio_path)
         self.validate_input_file(input_path)
 
+        # ノイズ除去エンジンの決定（既定の noisereduce では従来の挙動のまま）
+        use_reuse, denoise = resolve_denoise_plan(denoise, denoise_engine)
+        if denoise_engine != DEFAULT_DENOISE_ENGINE and not use_reuse:
+            print(f"ノイズ除去が無効のため、{denoise_engine} は使用しません。")
+
         # 動画ファイルの場合は音声を抽出
+        # （RE-USE 使用時は元のサンプルレートで抽出するため enhance_with_speech_cpp に任せる）
         video_temp_dir = None
         extracted_audio_path = None
+        enhance_temp_dir = None
 
-        if self.is_video_file(input_path):
+        if self.is_video_file(input_path) and not use_reuse:
             video_temp_dir = tempfile.mkdtemp(prefix="whisper_video_")
             extracted_audio_path = self.extract_audio_from_video(
                 input_path, Path(video_temp_dir)
@@ -755,6 +871,13 @@ class FasterWhisperTranscriber:
         temp_file = None
 
         try:
+            # RE-USE によるノイズ除去（明示指定時のみ）
+            if use_reuse:
+                enhance_temp_dir = tempfile.mkdtemp(prefix="reuse_enhance_")
+                audio_path = self.enhance_with_speech_cpp(
+                    input_path, Path(enhance_temp_dir), denoise_engine
+                )
+
             # ノイズ除去の要否を音声解析で自動判定
             if denoise is None:
                 denoise, noise_reduce_amount = self._auto_select_preprocessing(
@@ -841,6 +964,11 @@ class FasterWhisperTranscriber:
             if video_temp_dir:
                 import shutil
                 shutil.rmtree(video_temp_dir, ignore_errors=True)
+
+            # RE-USE の中間ファイルの削除
+            if enhance_temp_dir:
+                import shutil
+                shutil.rmtree(enhance_temp_dir, ignore_errors=True)
     
     def _run_model(
         self,
@@ -1484,6 +1612,15 @@ def main():
     )
 
     parser.add_argument(
+        '--denoise_engine',
+        choices=DENOISE_ENGINES,
+        default=DEFAULT_DENOISE_ENGINE,
+        help='ノイズ除去エンジン。re-use / re-use-laughter を指定すると speech.cpp の '
+             'NVIDIA RE-USE で事前にノイズ除去する（要 speech コマンド）。'
+             '指定時は noisereduce と自動判定は使わない (default: noisereduce)'
+    )
+
+    parser.add_argument(
         '--noise_reduce_amount',
         type=float,
         default=0.8,
@@ -1648,6 +1785,7 @@ def main():
             gain_db=args.gain,
             denoise=args.denoise,
             noise_reduce_amount=args.noise_reduce_amount,
+            denoise_engine=args.denoise_engine,
             no_speech_threshold=args.no_speech_threshold
         )
         transcribe_time = time.time() - transcribe_start
