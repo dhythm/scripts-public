@@ -1,6 +1,6 @@
-"""ローカルOCRエンジン（NDLOCR-Lite / YomiToku）の呼び出し
+"""ローカルOCRエンジン（NDLOCR-Lite / YomiToku / Indra OCR）の呼び出し
 
-どちらも依存パッケージのバージョンがこのプロジェクトと衝突するため、
+いずれも依存パッケージのバージョンがこのプロジェクトと衝突するため、
 ~/.cache 配下の専用 venv にインストールしてサブプロセスとして実行する。
 """
 
@@ -8,6 +8,7 @@ import json
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Union
 
@@ -20,7 +21,12 @@ DEFAULT_NDL_PATH = Path.home() / ".cache" / "ndlocr-lite"
 YOMITOKU_VERSION = "0.15.0"
 DEFAULT_YOMITOKU_PATH = Path.home() / ".cache" / "yomitoku"
 
-ENGINES = ["ndl", "yomitoku"]
+INDRA_VERSION = "1.1.2"
+DEFAULT_INDRA_PATH = Path.home() / ".cache" / "indra-ocr"
+# 柱とノンブル。本文には含めない
+INDRA_FURNITURE_LABELS = ("Page-Header", "Page-Footer")
+
+ENGINES = ["ndl", "yomitoku", "indra"]
 
 
 def parse_ndl_json(path: Union[str, Path]) -> str:
@@ -43,6 +49,29 @@ def parse_yomitoku_json(path: Union[str, Path]) -> str:
         p["contents"] for p in paragraphs
         if p.get("contents") and p.get("role") not in ("page_header", "page_footer")
     )
+
+
+def parse_indra_jsonl(path: Union[str, Path]) -> str:
+    """Indra OCR のJSON Lines（画像1枚＝1行）から、柱とノンブルを除いたブロックを読み順に返す"""
+    pages = []
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        record = json.loads(raw)
+        if record.get("source") == "error":
+            print(f"警告: Indra OCR がページを読めませんでした: {record.get('note', '')}", file=sys.stderr)
+            continue
+        blocks = record.get("blocks") or []
+        if blocks:
+            text = "\n\n".join(
+                b["text"] for b in blocks
+                if b.get("text") and b.get("label") not in INDRA_FURNITURE_LABELS
+            )
+        else:
+            text = "\n".join(line["text"] for line in record.get("lines") or [] if line.get("text"))
+        if text:
+            pages.append(text)
+    return "\n\n".join(pages)
 
 
 def _require_uv() -> str:
@@ -89,6 +118,20 @@ def setup_yomitoku(path: Path = DEFAULT_YOMITOKU_PATH, update: bool = False) -> 
             check=True,
         )
     print("YomiToku のセットアップが完了しました。")
+
+
+def setup_indra(path: Path = DEFAULT_INDRA_PATH, update: bool = False) -> None:
+    """Indra OCR を専用 venv にインストールする（モデル約76MBは初回実行時にダウンロードされる）"""
+    uv_path = _require_uv()
+    if not _venv_python(path).exists() or update:
+        print(f"Indra OCR 専用の仮想環境を作成中: {path / '.venv'}")
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run([uv_path, "venv", str(path / ".venv"), "--python", "3.12"], check=True)
+        subprocess.run(
+            [uv_path, "pip", "install", "-p", str(_venv_python(path)), f"indra-ocr=={INDRA_VERSION}"],
+            check=True,
+        )
+    print("Indra OCR のセットアップが完了しました。")
 
 
 def _ensure_installed(engine: str, path: Path) -> Path:
@@ -146,4 +189,23 @@ def run_yomitoku(
         if not matches:
             raise RuntimeError(f"YomiToku の出力が見つかりません: {image.name}")
         results[image] = parse_yomitoku_json(matches[0])
+    return results
+
+
+def run_indra(image_paths: List[Path], work_dir: Path, path: Path = DEFAULT_INDRA_PATH) -> Dict[Path, str]:
+    """Indra OCR で画像群をOCR（全コアで並列）し、画像パスごとの本文を返す"""
+    _ensure_installed("indra", path)
+    out_dir = work_dir / "indra_out"
+    subprocess.run(
+        [str(path / ".venv" / "bin" / "indra-ocr"), *[str(p) for p in image_paths],
+         "--mode", "ocr", "--format", "json", "--out", str(out_dir)],
+        check=True,
+    )
+    results = {}
+    for image in image_paths:
+        # 出力名は「<画像名>.jsonl」
+        output = out_dir / f"{image.stem}.jsonl"
+        if not output.exists():
+            raise RuntimeError(f"Indra OCR の出力が見つかりません: {image.name}")
+        results[image] = parse_indra_jsonl(output)
     return results

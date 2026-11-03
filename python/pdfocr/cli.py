@@ -1,9 +1,9 @@
 """pdfocr のコマンドライン
 
 使用方法:
-    uv run python -m pdfocr <PDF> [-o 出力] [--format txt|md] [--engine ndl|yomitoku]
+    uv run python -m pdfocr <PDF> [-o 出力] [--format txt|md] [--engine ndl|yomitoku|indra]
                                   [--ocr auto|always|never] [--dpi 300] [--force]
-    uv run python -m pdfocr setup {ndl,yomitoku} [--update]
+    uv run python -m pdfocr setup {ndl,yomitoku,indra} [--update]
 """
 
 import argparse
@@ -11,7 +11,15 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from pdfocr.engines import ENGINES, run_ndl, run_yomitoku, setup_ndl, setup_yomitoku
+from pdfocr.engines import (
+    ENGINES,
+    run_indra,
+    run_ndl,
+    run_yomitoku,
+    setup_indra,
+    setup_ndl,
+    setup_yomitoku,
+)
 from pdfocr.output import save_text, validate_output
 from pdfocr.pipeline import DEFAULT_DPI, OCR_MODES, convert
 from pdfocr.postprocess import (
@@ -28,12 +36,14 @@ def _run_setup(engine: str, update: bool) -> None:
     # テストで差し替えられるよう、呼び出し時にモジュールの関数を参照する
     if engine == "ndl":
         setup_ndl(update=update)
+    elif engine == "indra":
+        setup_indra(update=update)
     else:
         setup_yomitoku(update=update)
 
 
 def _ocr_runner(engine: str):
-    return run_ndl if engine == "ndl" else run_yomitoku
+    return {"ndl": run_ndl, "yomitoku": run_yomitoku, "indra": run_indra}[engine]
 
 
 def _setup_main(argv: List[str]) -> int:
@@ -54,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 エンジン:
   ndl       NDLOCR-Lite（デフォルト）。縦書きの和書に強く、GPUなしで高速。ルビ・柱・ノンブルは認識対象外
   yomitoku  YomiToku。読み順の推定や表に強い。ルビは除去する。個人利用は無料（商用は有料）
+  indra     Indra OCR。PyTorch不要・CPUのみで非常に高速。横書きの日本語に強い（縦書きは精度が落ちる）
 
 初回は使用するエンジンをセットアップしてください:
   uv run python -m pdfocr setup ndl
