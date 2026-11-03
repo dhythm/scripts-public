@@ -149,6 +149,26 @@ Qwen3-ASRは約30秒単位で区切って出力するため、`--format srt/vtt`
 以下のオプションはfaster-whisper専用で、Qwen3-ASRでは無視されます（指定すると警告を表示）:
 `--beam_size`, `--temperature`, `--vad_*`, `--no_speech_threshold`, `--no_condition_on_previous_text`, `--word_timestamps`, `--device`, `--compute_type`, `--cpu_threads`, `--num_workers`
 
+#### 話者分離（Qwen3-ASRのみ）
+
+`--diarize` を付けると、pyannote で話者を推定し、発話ごとに `SPEAKER_00` などの話者ラベルを付けます（デフォルトは無効）。faster-whisper では使えません。
+
+事前準備:
+
+1. `uv sync --extra diarize` で追加パッケージ（pyannote.audio、日本語の単語分割用 nagisa）をインストール
+2. Hugging Face で [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) の利用条件に同意
+3. Hugging Face のアクセストークンを環境変数 `HF_TOKEN`（または `HUGGINGFACE_TOKEN` / `PYANNOTE_AUTH_TOKEN`）に設定
+
+```bash
+# 話者数が分かっている場合
+uv run python transcribe_faster_whisper.py meeting.m4a --diarize --num_speakers 3 --timestamps
+
+# 話者数の範囲だけ指定
+uv run python transcribe_faster_whisper.py meeting.m4a --diarize --min_speakers 2 --max_speakers 5 --format json
+```
+
+出力は発話ごとに `SPEAKER_00: ...` 形式（テキスト）、`[SPEAKER_00] ...`（SRT）、`<v SPEAKER_00>...`（WebVTT）、`speaker` フィールド（JSON）になります。単語単位のタイムスタンプで区切るため、話者分離時は30秒単位より細かいセグメントになります。
+
 faster-whisperでVADが有効な場合、文字起こしを始める前に元の長さ・VAD後の見込み・削除秒数と削減率を表示します。削りすぎだと判断した場合は `Ctrl+C` で中断し、VADパラメータを調整して再実行できます。
 
 #### ユースケース別の使用方法

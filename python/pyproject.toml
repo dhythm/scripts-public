@@ -36,6 +36,15 @@ dependencies = [
     "pypdfium2>=4.30.0",
 ]
 
+[project.optional-dependencies]
+# 文字起こしの話者分離（--diarize）用。uv sync --extra diarize でインストール
+diarize = [
+    "mlx-qwen3-asr[diarize,aligner]>=0.4.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'",
+    # pyannote が引き込む torchaudio / torchcodec を、既存の torch 2.9 と ABI 互換の版に揃える
+    "torchaudio>=2.9,<2.10",
+    "torchcodec>=0.8,<0.9",
+]
+
 [project.scripts]
 site-inspector = "site_inspector.cli:app"
 

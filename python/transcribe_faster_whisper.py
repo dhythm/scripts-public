@@ -242,6 +242,27 @@ def chunks_to_segments(chunks: Optional[List[Dict]]) -> List[Dict]:
     return segments
 
 
+def speaker_segments_to_segments(speaker_segments: Optional[List[Dict]]) -> List[Dict]:
+    """
+    Qwen3-ASR の話者分離結果（speaker_segments）を共通のセグメント形式に変換する
+
+    文字のない話者区間は除外し、idは1から振り直す。
+    """
+    segments = []
+    for item in speaker_segments or []:
+        text = item.get('text', '')
+        if not text.strip():
+            continue
+        segments.append({
+            'id': len(segments) + 1,
+            'start': item['start'],
+            'end': item['end'],
+            'text': text,
+            'speaker': item['speaker'],
+        })
+    return segments
+
+
 def build_qwen_context(initial_prompt: Optional[str], hotwords: Optional[str]) -> str:
     """initial_prompt と hotwords を Qwen3-ASR の context（語彙ヒント）にまとめる"""
     return ' '.join(part for part in (initial_prompt, hotwords) if part)
@@ -941,12 +962,18 @@ class FasterWhisperTranscriber:
                         start = self._format_timestamp(segment['start'])
                         end = self._format_timestamp(segment['end'])
                         text = segment['text'].strip()
-                        
+                        if segment.get('speaker'):
+                            text = f"{segment['speaker']}: {text}"
+
                         if include_confidence and segment.get('no_speech_prob') is not None:
                             conf = f" [信頼度: {1 - segment['no_speech_prob']:.2f}]"
                             f.write(f"[{start} --> {end}]{conf} {text}\n")
                         else:
                             f.write(f"[{start} --> {end}] {text}\n")
+                elif any(seg.get('speaker') for seg in result.get('segments', [])):
+                    # 話者分離時は発話ごとに改行して話者を付ける
+                    for segment in result['segments']:
+                        f.write(f"{segment['speaker']}: {segment['text'].strip()}\n")
                 else:
                     f.write(result['text'].strip())
         
@@ -980,6 +1007,9 @@ class FasterWhisperTranscriber:
                     
                     if 'words' in seg:
                         seg_data['words'] = seg['words']
+
+                    if seg.get('speaker'):
+                        seg_data['speaker'] = seg['speaker']
                     
                     segments_data.append(seg_data)
                 
@@ -996,6 +1026,8 @@ class FasterWhisperTranscriber:
                         start = self._format_timestamp_srt(segment['start'])
                         end = self._format_timestamp_srt(segment['end'])
                         text = segment['text'].strip()
+                        if segment.get('speaker'):
+                            text = f"[{segment['speaker']}] {text}"
                         
                         f.write(f"{i}\n")
                         f.write(f"{start} --> {end}\n")
@@ -1011,6 +1043,9 @@ class FasterWhisperTranscriber:
                         start = self._format_timestamp_vtt(segment['start'])
                         end = self._format_timestamp_vtt(segment['end'])
                         text = segment['text'].strip()
+                        if segment.get('speaker'):
+                            # WebVTTの話者タグ（voice span）
+                            text = f"<v {segment['speaker']}>{text}"
                         
                         f.write(f"{start} --> {end}\n")
                         f.write(f"{text}\n\n")
@@ -1052,11 +1087,13 @@ class Qwen3ASRTranscriber(FasterWhisperTranscriber):
 
     DEFAULT_MODEL = 'Qwen/Qwen3-ASR-1.7B'
 
-    def __init__(self, model_name: str = DEFAULT_MODEL):
+    def __init__(self, model_name: str = DEFAULT_MODEL, diarization: Optional[Dict] = None):
         """
         Args:
             model_name: Hugging FaceのモデルID（例: Qwen/Qwen3-ASR-1.7B, Qwen/Qwen3-ASR-0.6B）
+            diarization: 話者分離の設定（resolve_diarization の戻り値）。Noneなら話者分離しない
         """
+        self.diarization = diarization
         try:
             from mlx_qwen3_asr import Session
         except ImportError:
@@ -1091,12 +1128,31 @@ class Qwen3ASRTranscriber(FasterWhisperTranscriber):
         if context:
             print(f"語彙ヒント(context): {context}")
 
-        result = self.session.transcribe(
-            str(wav_path),
-            language=language,
-            context=context,
-            return_chunks=True,
-        )
+        diarize_options = {}
+        if self.diarization:
+            print("話者分離を行います（pyannote）。初回はモデルのダウンロードに時間がかかります...")
+            diarize_options = {
+                'diarize': True,
+                'diarization_num_speakers': self.diarization['num_speakers'],
+                'diarization_min_speakers': self.diarization['min_speakers'],
+                'diarization_max_speakers': self.diarization['max_speakers'],
+            }
+
+        try:
+            result = self.session.transcribe(
+                str(wav_path),
+                language=language,
+                context=context,
+                return_chunks=True,
+                **diarize_options,
+            )
+        except ImportError as e:
+            if not self.diarization:
+                raise
+            raise RuntimeError(
+                f"話者分離に必要なパッケージがありません ({e})。\n"
+                "uv sync --extra diarize を実行してください。"
+            ) from e
 
         if result.truncated:
             print("警告: 一部のチャンクがトークン上限で途中終了しました。末尾が欠けている可能性があります。")
@@ -1106,7 +1162,12 @@ class Qwen3ASRTranscriber(FasterWhisperTranscriber):
             print(f"検出された言語: {result.language}")
         print("文字起こしが完了しました。")
 
-        segments = chunks_to_segments(result.chunks)
+        if self.diarization:
+            segments = speaker_segments_to_segments(result.speaker_segments)
+            speakers = sorted({seg['speaker'] for seg in segments})
+            print(f"検出された話者: {len(speakers)}人 ({', '.join(speakers)})")
+        else:
+            segments = chunks_to_segments(result.chunks)
         duration = max((c['end'] for c in result.chunks or []), default=0.0)
         return {
             'text': result.text,
@@ -1154,6 +1215,46 @@ def resolve_model(engine: str, model: Optional[str]) -> str:
     return Qwen3ASRTranscriber.DEFAULT_MODEL
 
 
+DEFAULT_MIN_SPEAKERS = 1
+DEFAULT_MAX_SPEAKERS = 8
+
+
+def resolve_diarization(
+    engine: str,
+    diarize: bool,
+    num_speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+) -> Optional[Dict]:
+    """
+    --diarize 関連のCLIオプションを検証し、話者分離の設定を返す
+
+    話者分離しない場合は None を返す。不正な組み合わせは ValueError。
+    """
+    if not diarize:
+        if any(v is not None for v in (num_speakers, min_speakers, max_speakers)):
+            raise ValueError(
+                "--num_speakers / --min_speakers / --max_speakers は --diarize と一緒に指定してください。"
+            )
+        return None
+    if engine != 'qwen3':
+        raise ValueError("話者分離（--diarize）は Qwen3-ASR エンジンでのみ使用できます。")
+
+    min_speakers = DEFAULT_MIN_SPEAKERS if min_speakers is None else min_speakers
+    max_speakers = DEFAULT_MAX_SPEAKERS if max_speakers is None else max_speakers
+    if num_speakers is not None and num_speakers < 1:
+        raise ValueError("--num_speakers は1以上を指定してください。")
+    if min_speakers < 1:
+        raise ValueError("--min_speakers は1以上を指定してください。")
+    if max_speakers < min_speakers:
+        raise ValueError("--max_speakers は --min_speakers 以上を指定してください。")
+    return {
+        'num_speakers': num_speakers,
+        'min_speakers': min_speakers,
+        'max_speakers': max_speakers,
+    }
+
+
 def find_changed_options(values: Dict, defaults: Dict) -> List[str]:
     """デフォルト値から変更されたオプション名を返す"""
     return [name for name, value in values.items() if value != defaults.get(name)]
@@ -1186,6 +1287,9 @@ def main():
 
   # WebVTT字幕形式で出力
   %(prog)s input.mp3 --format vtt --output subtitles.vtt
+
+  # 話者分離（Qwen3-ASRのみ。uv sync --extra diarize と HF_TOKEN が必要）
+  %(prog)s meeting.m4a --diarize --num_speakers 3 --timestamps
 
 サポートされる形式:
   音声: mp3, wav, m4a, flac, aac, ogg, wma
@@ -1413,6 +1517,31 @@ def main():
     )
 
     parser.add_argument(
+        '--diarize',
+        action='store_true',
+        help='話者分離を行う（Qwen3-ASRのみ）。pyannote を使用し、'
+             'uv sync --extra diarize と Hugging Face トークン（HF_TOKEN）が必要'
+    )
+
+    parser.add_argument(
+        '--num_speakers',
+        type=int,
+        help='話者数が分かっている場合に指定（--diarize 時のみ）'
+    )
+
+    parser.add_argument(
+        '--min_speakers',
+        type=int,
+        help=f'想定する最小話者数（--diarize 時のみ）(default: {DEFAULT_MIN_SPEAKERS})'
+    )
+
+    parser.add_argument(
+        '--max_speakers',
+        type=int,
+        help=f'想定する最大話者数（--diarize 時のみ）(default: {DEFAULT_MAX_SPEAKERS})'
+    )
+
+    parser.add_argument(
         '--cpu_threads',
         type=int,
         default=0,
@@ -1446,6 +1575,13 @@ def main():
         engine = resolve_engine(args.engine, args.model)
         if engine == 'whisper' and args.engine is None:
             print(f"--model {args.model} が指定されたため、faster-whisperを使用します。")
+        diarization = resolve_diarization(
+            engine,
+            diarize=args.diarize,
+            num_speakers=args.num_speakers,
+            min_speakers=args.min_speakers,
+            max_speakers=args.max_speakers,
+        )
         if engine == 'qwen3':
             ignored = find_changed_options(
                 {name: getattr(args, name) for name in WHISPER_ONLY_OPTIONS},
@@ -1458,7 +1594,7 @@ def main():
         # 文字起こし実行
         if engine == 'qwen3':
             args.model = resolve_model(engine, args.model)
-            transcriber = Qwen3ASRTranscriber(model_name=args.model)
+            transcriber = Qwen3ASRTranscriber(model_name=args.model, diarization=diarization)
             # Qwen3-ASRは無音区間を自前で処理するため、Whisper用のVADは使わない
             args.vad_filter = False
         else:

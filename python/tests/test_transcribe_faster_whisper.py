@@ -13,6 +13,7 @@ from pydub import AudioSegment
 
 from transcribe_faster_whisper import (
     FasterWhisperTranscriber,
+    Qwen3ASRTranscriber,
     analyze_audio_levels,
     build_qwen_context,
     choose_vad_threshold,
@@ -22,7 +23,9 @@ from transcribe_faster_whisper import (
     normalize_peak,
     recommend_preprocessing,
     resolve_engine,
+    resolve_diarization,
     resolve_model,
+    speaker_segments_to_segments,
 )
 
 
@@ -312,3 +315,181 @@ class TestResolveModel:
 
     def test_explicit_model_wins(self):
         assert resolve_model('whisper', 'medium') == 'medium'
+
+
+class TestSpeakerSegmentsToSegments:
+    """Qwen3-ASR の speaker_segments を共通のセグメント形式に変換するテスト"""
+
+    def test_converts_with_speaker_and_ids(self):
+        speaker_segments = [
+            {'speaker': 'SPEAKER_00', 'start': 0.0, 'end': 2.5, 'text': 'こんにちは。'},
+            {'speaker': 'SPEAKER_01', 'start': 2.5, 'end': 4.0, 'text': 'どうも。'},
+        ]
+        segments = speaker_segments_to_segments(speaker_segments)
+        assert segments == [
+            {'id': 1, 'start': 0.0, 'end': 2.5, 'text': 'こんにちは。', 'speaker': 'SPEAKER_00'},
+            {'id': 2, 'start': 2.5, 'end': 4.0, 'text': 'どうも。', 'speaker': 'SPEAKER_01'},
+        ]
+
+    def test_skips_turns_without_text(self):
+        """話者区間はあっても文字のない区間（咳・相づち等）は出力しない"""
+        speaker_segments = [
+            {'speaker': 'SPEAKER_00', 'start': 0.0, 'end': 1.0, 'text': ''},
+            {'speaker': 'SPEAKER_01', 'start': 1.0, 'end': 2.0, 'text': 'はい。'},
+        ]
+        segments = speaker_segments_to_segments(speaker_segments)
+        assert len(segments) == 1
+        assert segments[0]['id'] == 1
+        assert segments[0]['speaker'] == 'SPEAKER_01'
+
+    def test_none_returns_empty(self):
+        assert speaker_segments_to_segments(None) == []
+
+
+def _speaker_result():
+    return {
+        'text': 'こんにちは。どうも。',
+        'segments': [
+            {'id': 1, 'start': 0.0, 'end': 1.0, 'text': 'こんにちは。', 'speaker': 'SPEAKER_00'},
+            {'id': 2, 'start': 1.0, 'end': 2.0, 'text': 'どうも。', 'speaker': 'SPEAKER_01'},
+        ],
+    }
+
+
+def _bare_transcriber():
+    transcriber = FasterWhisperTranscriber.__new__(FasterWhisperTranscriber)
+    transcriber.model_name, transcriber.device = 'qwen', 'mlx'
+    return transcriber
+
+
+class TestSaveResultWithSpeaker:
+    """話者ラベル付きセグメントの保存テスト"""
+
+    def test_text_with_timestamps_has_speaker(self, tmp_path):
+        out = tmp_path / 'out.txt'
+        _bare_transcriber().save_result(_speaker_result(), out, include_timestamps=True)
+        assert out.read_text(encoding='utf-8') == (
+            '[00:00:00.00 --> 00:00:01.00] SPEAKER_00: こんにちは。\n'
+            '[00:00:01.00 --> 00:00:02.00] SPEAKER_01: どうも。\n'
+        )
+
+    def test_text_without_timestamps_is_one_line_per_turn(self, tmp_path):
+        """話者分離時はタイムスタンプなしでも発話ごとに改行し、話者を付ける"""
+        out = tmp_path / 'out.txt'
+        _bare_transcriber().save_result(_speaker_result(), out)
+        assert out.read_text(encoding='utf-8') == (
+            'SPEAKER_00: こんにちは。\n'
+            'SPEAKER_01: どうも。\n'
+        )
+
+    def test_json_includes_speaker(self, tmp_path):
+        import json
+        out = tmp_path / 'out.json'
+        _bare_transcriber().save_result(
+            _speaker_result(), out, output_format='json', include_timestamps=True
+        )
+        data = json.loads(out.read_text(encoding='utf-8'))
+        assert [s['speaker'] for s in data['segments']] == ['SPEAKER_00', 'SPEAKER_01']
+
+    def test_srt_prefixes_speaker(self, tmp_path):
+        out = tmp_path / 'out.srt'
+        _bare_transcriber().save_result(
+            _speaker_result(), out, output_format='srt', include_timestamps=True
+        )
+        assert '[SPEAKER_00] こんにちは。' in out.read_text(encoding='utf-8')
+
+    def test_vtt_uses_voice_tag(self, tmp_path):
+        out = tmp_path / 'out.vtt'
+        _bare_transcriber().save_result(
+            _speaker_result(), out, output_format='vtt', include_timestamps=True
+        )
+        assert '<v SPEAKER_01>どうも。' in out.read_text(encoding='utf-8')
+
+    def test_without_speaker_output_is_unchanged(self, tmp_path):
+        """話者分離なしの結果は従来どおりの出力（後方互換）"""
+        out = tmp_path / 'out.txt'
+        result = {'text': ' はい。 ', 'segments': [{'id': 1, 'start': 0.0, 'end': 1.0, 'text': 'はい。'}]}
+        _bare_transcriber().save_result(result, out)
+        assert out.read_text(encoding='utf-8') == 'はい。'
+
+
+class TestResolveDiarization:
+    """--diarize 関連オプションから話者分離設定を決めるテスト"""
+
+    def test_disabled_returns_none(self):
+        assert resolve_diarization('qwen3', diarize=False) is None
+
+    def test_enabled_for_qwen3(self):
+        assert resolve_diarization('qwen3', diarize=True, num_speakers=2) == {
+            'num_speakers': 2, 'min_speakers': 1, 'max_speakers': 8,
+        }
+
+    def test_whisper_raises(self):
+        with pytest.raises(ValueError, match='Qwen3-ASR'):
+            resolve_diarization('whisper', diarize=True)
+
+    def test_speaker_options_without_diarize_raise(self):
+        """--diarize なしで話者数だけ指定されたら気づけるようにする"""
+        with pytest.raises(ValueError, match='--diarize'):
+            resolve_diarization('qwen3', diarize=False, num_speakers=2)
+
+    @pytest.mark.parametrize('kwargs', [
+        {'num_speakers': 0},
+        {'min_speakers': 0},
+        {'min_speakers': 3, 'max_speakers': 2},
+    ])
+    def test_invalid_counts_raise(self, kwargs):
+        with pytest.raises(ValueError):
+            resolve_diarization('qwen3', diarize=True, **kwargs)
+
+
+class _FakeQwenResult:
+    def __init__(self, speaker_segments=None):
+        self.text = 'こんにちは。どうも。'
+        self.language = 'Japanese'
+        self.truncated = False
+        self.finish_reason = 'stop'
+        self.chunks = [{'text': 'こんにちは。どうも。', 'start': 0.0, 'end': 30.0}]
+        self.speaker_segments = speaker_segments
+
+
+class _FakeSession:
+    def __init__(self, result):
+        self.result = result
+        self.kwargs = None
+
+    def transcribe(self, path, **kwargs):
+        self.kwargs = kwargs
+        return self.result
+
+
+def _qwen_with(session, diarization=None):
+    transcriber = Qwen3ASRTranscriber.__new__(Qwen3ASRTranscriber)
+    transcriber.session = session
+    transcriber.diarization = diarization
+    transcriber.model_name, transcriber.device = 'qwen', 'mlx'
+    return transcriber
+
+
+class TestQwen3Diarization:
+    """Qwen3ASRTranscriber の話者分離の受け渡しテスト"""
+
+    def test_default_does_not_diarize(self, tmp_path):
+        session = _FakeSession(_FakeQwenResult())
+        result = _qwen_with(session)._run_model(tmp_path / 'a.wav')
+        assert 'diarize' not in session.kwargs
+        assert 'speaker' not in result['segments'][0]
+
+    def test_diarize_passes_options_and_uses_speaker_segments(self, tmp_path):
+        session = _FakeSession(_FakeQwenResult(speaker_segments=[
+            {'speaker': 'SPEAKER_00', 'start': 0.0, 'end': 1.5, 'text': 'こんにちは。'},
+            {'speaker': 'SPEAKER_01', 'start': 1.5, 'end': 3.0, 'text': 'どうも。'},
+        ]))
+        diarization = {'num_speakers': 2, 'min_speakers': 1, 'max_speakers': 8}
+        result = _qwen_with(session, diarization)._run_model(tmp_path / 'a.wav')
+        assert session.kwargs['diarize'] is True
+        assert session.kwargs['diarization_num_speakers'] == 2
+        assert session.kwargs['diarization_min_speakers'] == 1
+        assert session.kwargs['diarization_max_speakers'] == 8
+        assert [s['speaker'] for s in result['segments']] == ['SPEAKER_00', 'SPEAKER_01']
+        assert result['duration'] == 30.0
